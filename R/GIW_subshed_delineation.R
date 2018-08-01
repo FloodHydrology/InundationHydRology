@@ -117,7 +117,7 @@ GIW_subshed_delineation<-function(
     
     #Recalculate nubmer of depressions
     depressions<-depressions*watershed
-    n_depression<-length(unique(depressions))
+    n_depression<-length(unique(depressions@data@values))
   }
   
   #Export Watershed
