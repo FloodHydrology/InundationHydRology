@@ -21,9 +21,9 @@ A few quick notes on data:
 3) This script will be housed at http://floodhydrology.com/DEM_Inundate/Dark_Bay_Demo.html
 
 #Step 1: Workspace Organization
-As always, the first step is to define relevant directories, aquire required librairies, and download input data. Note, this anlaysis requires a DEM, wetland location, and wetland polygon, all of which can be found in the "Storage_Capacity" subdirectory on the Palmer Lab server. Note, the script also requires the user to specify the location of the "storage capacity" data directory, a scratch workspsace, and location of the [Whitebox Tools](http://www.uoguelph.ca/~hydrogeo/WhiteboxTools/index.html) executable. For SESYNC users, note that Whitebox cannot be initiated from the RStudio Server, and you will need to use the WynAnalytics virtual machine.
+As always, the first step is to define relevant directories, aquire required librairies, and download input data. Note, this anlaysis requires a DEM, wetland location, and wetland polygon, all of which can be found in the "Storage_Capacity" subdirectory on the Palmer Lab server. Further, the script also requires the user to specify the location of the "storage capacity" data directory, a scratch workspsace, and location of the [Whitebox Tools](http://www.uoguelph.ca/~hydrogeo/WhiteboxTools/index.html) executable. For SESYNC users, note that Whitebox cannot be initiated from the RStudio Server, and you will need to use the WynAnalytics virtual machine.
 
-```{r, message=FALSE, warning=FALSE}
+```{r, message=FALSE, warning=FALSE, results='hide'}
 #Clear memory (KH says not to do this...maybe I'll convert eventually)
 rm(list=ls(all=TRUE))
 
@@ -46,46 +46,67 @@ library(InundationHydRology)
 
 #Download relevant data 
 dem<-raster(paste0(data_dir,"II_work/jl_dem"))
-pnt<-readOGR(paste0(data_dir,"II_Work/."),"Wetland_Locations")
+pnt<-readOGR(paste0(data_dir,"II_Work/."),"Wetland_Locations", verbose = F)
 pnt<-pnt[pnt$Name=="DK",]
 burn<-readOGR(paste0(data_dir,"II_Work/."),"DarkBay_Burn")
 
 ```
 
-
+#Step 2: Wetland Delineation!
 
 Below, we delineate indiviudal basins for each wetland. 
 
-```{r, message=FALSE, warning=FALSE}
+```{r, message=FALSE, warning=FALSE, results='hide'}
 #Burn wetland into DEM
 dem_burn<-GIW_burn(dem, burn)
 
 #Identify depressions in DEM
 giws<-GIW_identification(
-        dem=dem_burn, 
-        min_size=100, 
-        workspace="C:\\ScratchWorkspace\\", 
-        wbt_path="C:/WBT/whitebox_tools")
+        dem=dem_burn,                       #DEM in question
+        min_size=100,                       #Minimum depression size (in map units)
+        workspace="C:\\ScratchWorkspace\\", #Scratch Workspace
+        wbt_path="C:/WBT/whitebox_tools")   #WBG toolbox location
 
 #Identify wetland subshed
 subshed<-GIW_subshed_delineation(
-        dem=dem_burn, 
-        depressions=giws, 
-        wetland=pnt)
+        dem=dem_burn,      #DEM
+        depressions=giws,  #depression from GIW_identification tool
+        wetland=pnt)       #spatialpoint of wetland location
 
 #Devleop stage storage relationship
 storage<-GIW_stage_storage(
-        subshed = subshed, 
-        dem = dem_burn,
-        z_max = 1,
-        dz = 0.1)
+        subshed = subshed, #Subshed delineated in previous step
+        dem = dem_burn,    #DEM
+        z_max = 1,         #Maximum inundation depth
+        dz = 1/12)          #Inundation Interval
 
-#Pring max inundation extent
+#Print max inundation extent
 inundation<-GIW_max_inundation(
-  subshed, #wateshed raster
-  dem,     #DEM for the analysis
-  storage #Storage Curve 
+  subshed,  #wateshed raster
+  dem_burn, #DEM for the analysis
+  storage   #Storage Curve 
   )
+
+```
+#Step 3: Initial Results!!!
+```{r, echo=FALSE}
+e<-extent(c(1668452,1669133,507159.1,507768.5))
+dem_crop<-crop(dem_burn, e)
+subshed<-rasterToPolygons(subshed, dissolve = T)
+
+plot(dem_crop, main = "Dark Bay")
+plot(subshed,add=T)
+plot(inundation, add=T, col=topo.colors(1), legend=F)
+```
+
+```{r, echo=F}
+par(mar=c(3,5,1,1))
+plot(volume~z, data=storage,  
+     xlab="Relative Depth [ft]", 
+     ylab=expression("Volume [ft"^3*"]"), 
+     ps=12, cex.axis=10/12, cex.lab=14/12, pch=19)
+z<-min(storage$z[storage$outflow_length!=0])
+abline(v=z, lty=2, lwd=2, col="grey30")
 
 ```
 
