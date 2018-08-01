@@ -18,7 +18,7 @@ A few quick notes on data:
 
 2) The 1m DEM was downloaded from http://imap.maryland.gov/Pages/lidar-dem-download-files.aspx
 
-3) This script will be housed at http://floodhydrology.com/DEM_Inundate/Dark_Bay_Demo.html
+3) This script will be housed at [floodhydrology.com](http://floodhydrology.com/InundationHydRology/Dark_Bay_Demo.html)
 
 #Step 1: Workspace Organization
 As always, the first step is to define relevant directories, aquire required librairies, and download input data. Note, this anlaysis requires a DEM, wetland location, and wetland polygon, all of which can be found in the "Storage_Capacity" subdirectory on the Palmer Lab server. Further, the script also requires the user to specify the location of the "storage capacity" data directory, a scratch workspsace, and location of the [Whitebox Tools](http://www.uoguelph.ca/~hydrogeo/WhiteboxTools/index.html) executable. For SESYNC users, note that Whitebox cannot be initiated from the RStudio Server, and you will need to use the WynAnalytics virtual machine.
