@@ -89,7 +89,7 @@ GIW_subshed_delineation<-function(
   while(n_depression>0){
     #Extract depression of interest
     wetland_dep<-depressions
-    wetland_dep[wetland_dep!=unique(wetland_dep)[1]]<-NA
+    wetland_dep[wetland_dep!=unique(wetland_dep@data@values)[1]]<-NA
     wetland_dep<-wetland_dep*0+1
     
     #Define watershed pour point (max fac in depression)  
