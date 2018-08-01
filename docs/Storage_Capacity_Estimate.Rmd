@@ -1,0 +1,410 @@
+---
+title: "Storage Capacity Estimate"
+output:
+  html_document:
+    df_print: paged
+    toc: yes
+    toc_float: yes
+  html_notebook:
+    toc: yes
+    toc_float: yes
+---
+The goal of this notebook is to estimate both contemporary and restorable storage capacity using the modified TDI approach developed by [Jones et al., [2018]](https://doi.org/10.1002/hyp.11405).  
+
+A few quick notes on data:
+
+1) All data is housed in the Palmer Lab direcotry (Choptank/Nate/Storage_Capacity)
+
+2) The 1m DEM was downloaded from http://imap.maryland.gov/Pages/lidar-dem-download-files.aspx
+
+3) This script will be housed at http://floodhydrology.com/DEM_Inundate/Storage_Capacity_Estimate.html
+
+4) The points are approximate locations and codes are from memory. I will work with KH to downlaod directly from the Choptank-DB
+
+#Step 1: Workspace Organization
+
+```{r, message=FALSE, warning=FALSE,}
+#Clear memory (KH says not to do this...maybe I'll convert eventually)
+rm(list=ls(all=TRUE))
+
+#Turn off warnings
+options(warn=-1)
+
+#Setworking directory
+setwd("//storage.research.sesync.org/palmer-group-data/choptank/Nate/Storage_Capacity")
+
+#Download packages 
+library(raster)
+library(sp)
+library(rgdal)
+library(rgeos)
+library(actuar)
+library(poweRlaw)
+library(dplyr)
+
+#Download data 
+dem_jl<-raster("II_work/jl_dem")
+dem_jr<-raster("II_work/jr_dem")
+pnts<-readOGR("II_Work/.","Wetland_Locations")
+
+#Download Wetlnd Polygons to "Burn-In""
+burn_DK<-readOGR("II_Work/.","DarkBay_Burn")
+
+```
+
+#Step 2: Delineation
+[Add description of WhiteBox GAT and WhiteBox Tools]
+
+A few helpful links:
+
+https://onlinelibrary.wiley.com/doi/abs/10.1002/hyp.10648
+
+https://whiteboxgeospatial.wordpress.com/2014/05/04/mapping-watersheds-in-whitebox-gat/
+
+
+##2.05 Burn in depressions
+For relevant depression, burn in depressional area.
+```{r}
+#Define variables (for eventual function)
+wetland_burn<-function(
+  dem,   #DEM in question 
+  burn){ #Wetland Polygon
+  
+  #Create DEM mask
+  mask<-rasterize(burn, dem, 1)
+  dem_mask<-mask*dem
+  
+  #Create minimum raster
+  dem_min<-cellStats(dem_mask, min, na.rm=T)
+  dem_min<-dem_mask*0+dem_min
+  dem_min[is.na(dem_min)]<-0
+  
+  #Replace masked location with min raster value
+  dem_mask<-dem_mask*0
+  dem_mask[is.na(dem_mask)]<-1
+  dem<-dem*dem_mask+dem_min
+  
+  #Export DEM
+  dem
+}
+
+#Conduct for JL
+dem_jl<-wetland_burn(dem_jl, burn_DK)
+```
+
+
+
+
+
+
+##2.1 Identify depressions
+Use WhiteBox Tools to identify depresions using Monte Carlo approach
+```{r, message=FALSE, warning=FALSE}
+#Create function for depressional analysis 
+Depression_Identification<-function(
+  dem=dem, 
+  min_size=100, #number of cells (for now)
+  iterations=100, #number of Monte Carlo iterations
+  dem_rmse=0.0607, #RMSE of 18.5 cm
+  workspace="C:\\ScratchWorkspace\\", 
+  wbt_path="C:/WBT/whitebox_tools"){
+
+  #Set working directory
+  setwd(paste(workspace))
+  
+  #Write raster to ScratchWorkspace
+  dem<-na.omit(dem)
+  writeRaster(dem, paste0(workspace,"dem.tif"), overwrite=T)
+
+  #Breach single-cell pits
+  system(paste(paste(wbt_path), 
+              "-r=BreachSingleCellPits", 
+               paste0("--wd=",workspace),
+              "--dem='dem.tif'", 
+              "-o='dem_breachedsinglecells.tif'"))
+  
+  #Filter the DEM
+  system(paste(paste(wbt_path), 
+              "-r=EdgePreservingMeanFilter", 
+               paste0("--wd=",workspace),
+              "-i='dem_breachedsinglecells.tif'", 
+              "-o='dem_edgepreservingfilter.tif'",
+              "filter=10", 
+              "threshold=100"))
+  
+  #Identify depressions using WhiteBox GAT Monte Carlo Approach
+  system(paste(paste(wbt_path),
+                "-r=StochasticDepressionAnalysis", 
+                 paste0("--wd=",workspace),
+                "--dem='dem_edgepreservingfilter.tif'", 
+                "-o='depression.tif'",
+                paste0("--rmse=",dem_rmse),
+                paste0("--iterations=",iterations)))
+  
+  #Reclass raster
+  system(paste(paste(wbt_path), 
+                "-r=Reclass", 
+                 paste0("--wd=",workspace),
+                "-i='depression.tif'", 
+                "-o='reclass.tif'",
+                "--reclass_vals='0;0;0.80';1;0.80;1"))
+  
+  #Identify clusters of inundated cells
+  system(paste(paste(wbt_path), 
+               "-r=Clump",
+               paste0("--wd=",workspace),
+               "-i='reclass.tif'", 
+               "-o='group.tif'",
+               "--diag", 
+               "--zero_back"))
+  
+  #Identify Clusters greater than 100m2
+  r<-raster(paste0(workspace,"group.tif")) #Read raster
+  r_pnts<-data.frame(rasterToPoints(r))        #Convert to XYZ pnts
+  r_remove<-r_pnts %>% group_by(group) %>% tally() #sum # of raster cells for each group
+  r_remove<-r_remove$group[r_remove$n>min_size]
+  r_pnts$group[r_pnts$group %in% r_remove]<-0
+  r_pnts<-r_pnts[r_pnts$group!=0,]
+  r_pnts<-SpatialPoints(r_pnts[,1:2])
+  r_remove<-rasterize(r_pnts, r, 0)
+  r_remove[is.na(r_remove)]<-1
+  r<-r*r_remove
+  r[r==0]<-NA
+  
+  #Export depression raster
+  r
+}
+
+```
+
+##2.2 Delineate internally draining basins
+
+```{r, message=FALSE, warning=FALSE}
+#Create function to delineate watersheds
+giw_storage_capacity<-function(
+  workspace="C:\\ScratchWorkspace\\",
+  wbt_path="C:/WBT/whitebox_tools",
+  dem,
+  depressions,
+  wetland){
+
+#Set Working Directory
+setwd(paste(workspace))  
+
+#Export rater to workspace
+writeRaster(dem, paste0(workspace,"dem.tif"), overwrite=T)
+
+#Breach single-cell pits
+system(paste(paste(wbt_path), 
+            "-r=BreachSingleCellPits", 
+             paste0("--wd=",workspace),
+            "--dem='dem.tif'", 
+            "-o='dem_breachedsinglecells.tif'"))
+
+#Filter the DEM
+system(paste(paste(wbt_path), 
+            "-r=EdgePreservingMeanFilter", 
+             paste0("--wd=",workspace),
+            "-i='dem_breachedsinglecells.tif'", 
+            "-o='dem_edgepreservingfilter.tif'",
+            "filter=10", 
+            "threshold=100"))
+
+#Breach Analysis of the DEM
+system(paste(paste(wbt_path), 
+             "-r=BreachDepressions", 
+              paste0("--wd=",workspace),
+             "--dem=dem_edgepreservingfilter.tif", 
+             "-o=dem_breach.tif"))
+
+#Flow Direction
+system(paste(paste(wbt_path), 
+          "-r=D8Pointer", 
+           paste0("--wd=",workspace),
+          "--dem='dem_breach.tif'", 
+          "-o='fdr.tif'",
+          "--out_type=sca"))
+
+#Flow Accumulation
+system(paste(paste(wbt_path), 
+          "-r=DInfFlowAccumulation", 
+           paste0("--wd=",workspace),
+          "--dem='dem_breach.tif'", 
+          "-o='fac.tif'",
+          "--out_type=sca"))
+
+#Read fac and fdr rasters into R environment
+fdr<-raster(paste0(workspace,"fdr.tif"))
+fac<-raster(paste0(workspace,"fac.tif"))
+
+#Extract depression of interest
+wetland_dep<-depressions
+wetland_dep[wetland_dep!=raster::extract(depressions, wetland)]<-NA
+wetland_dep<-wetland_dep*0+1
+
+#Define watershed pour point (max fac in depression)  
+wetland_fac<-wetland_dep*fac
+max_wetland_fac<-cellStats(wetland_fac, max)
+pp<-rasterToPoints(wetland_fac, fun=function(x){x==max_wetland_fac})
+pp<-SpatialPointsDataFrame(pp, data.frame(x=1))
+pp@proj4string<-dem@crs
+writeOGR(pp,paste0(workspace,"."),"pp", drive="ESRI Shapefile", overwrite=T)
+
+#Watershed Delineation
+system(paste(paste(wbt_path), 
+        "-r=Watershed", 
+         paste0("--wd=",workspace),
+        "--d8_pntr='fdr.tif'", 
+        "--pour_pts=pp.shp",
+        "-o=watershed.tif"))
+
+#Import watershed shape
+watershed<-raster(paste0(workspace,"watershed.tif"))
+
+#Clip relevant layers to watershed
+fac<-fac*watershed
+fdr<-fac*watershed
+depressions<-depressions*watershed
+
+#If there are other basins complete the analysis again to remove
+depressions[depressions==raster::extract(depressions, wetland)]<-NA
+n_depression<-length(unique(depressions))
+while(n_depression>0){
+  #Extract depression of interest
+  wetland_dep<-depressions
+  wetland_dep[wetland_dep!=unique(wetland_dep)[1]]<-NA
+  wetland_dep<-wetland_dep*0+1
+  
+  #Define watershed pour point (max fac in depression)  
+  wetland_fac<-wetland_dep*fac
+  max_wetland_fac<-cellStats(wetland_fac, max)
+  pp<-rasterToPoints(wetland_fac, fun=function(x){x==max_wetland_fac})
+  pp<-matrix(pp[1,], ncol=3)
+  pp<-SpatialPointsDataFrame(pp, data.frame(x=1))
+  pp@proj4string<-dem@crs
+  writeOGR(pp,paste0(workspace,"."),"pp", drive="ESRI Shapefile", overwrite=T)
+  
+  #Watershed Delineation
+  system(paste(paste(wbt_path), 
+          "-r=Watershed", 
+           paste0("--wd=",workspace),
+          "--d8_pntr='fdr.tif'", 
+          "--pour_pts=pp.shp",
+          "-o=subshed.tif"))
+  subshed<-raster(paste0(workspace,"subshed.tif"))
+  
+  #Remove subshed from watershed
+  subshed[is.na(subshed)]<-0
+  watershed<-watershed-subshed
+  watershed[watershed!=1]<-NA
+  
+  #Recalculate nubmer of depressions
+  depressions<-depressions*watershed
+  n_depression<-length(unique(depressions))
+  }
+
+#Export Watershed
+writeRaster(watershed, paste0(paste(wetland$Name),"_subshed.asc"), overwrite=T)
+watershed
+}
+
+```
+
+Below, we delineate indiviudal basins for each wetland. 
+
+```{r echo=F}
+#Identify depressions in both DEMs
+giws_jr<-Depression_Identification(
+  dem=dem_jr, 
+  min_size=100, 
+  workspace="C:\\ScratchWorkspace\\", 
+  wbt_path="C:/WBT/whitebox_tools")
+
+giws_jl<-Depression_Identification(
+  dem=dem_jl, 
+  min_size=100, 
+  workspace="C:\\ScratchWorkspace\\", 
+  wbt_path="C:/WBT/whitebox_tools")
+
+#Storage Capacity at Jones Road
+# SB<-giw_storage_capacity(dem=dem_jr, depressions=giws_jr, wetland=pnts[pnts$Name=="SB",])
+# DF<-giw_storage_capacity(dem=dem_jr, depressions=giws_jr, wetland=pnts[pnts$Name=="DF",])
+# QB<-giw_storage_capacity(dem=dem_jr, depressions=giws_jr, wetland=pnts[pnts$Name=="QB",])
+# TI<-giw_storage_capacity(dem=dem_jr, depressions=giws_jr, wetland=pnts[pnts$Name=="TI",])
+# DV<-giw_storage_capacity(dem=dem_jr, depressions=giws_jr, wetland=pnts[pnts$Name=="DV",])
+# NB<-giw_storage_capacity(dem=dem_jr, depressions=giws_jr, wetland=pnts[pnts$Name=="NB",])
+# JA<-giw_storage_capacity(dem=dem_jr, depressions=giws_jr, wetland=pnts[pnts$Name=="JA",])
+# JB<-giw_storage_capacity(dem=dem_jr, depressions=giws_jr, wetland=pnts[pnts$Name=="JB",])
+# JC<-giw_storage_capacity(dem=dem_jr, depressions=giws_jr, wetland=pnts[pnts$Name=="JC",])
+# GB<-giw_storage_capacity(dem=dem_jr, depressions=giws_jr, wetland=pnts[pnts$Name=="GB",])
+# #JU<-giw_storage_capacity(dem=dem_jr, depressions=giws_jr, wetland=pnts[pnts$Name=="JU",])
+# DB<-giw_storage_capacity(dem=dem_jl, depressions=giws_jl, wetland=pnts[pnts$Name=="DB",])
+# TC<-giw_storage_capacity(dem=dem_jl, depressions=giws_jl, wetland=pnts[pnts$Name=="TC",])
+# TB<-giw_storage_capacity(dem=dem_jl, depressions=giws_jl, wetland=pnts[pnts$Name=="TB",])
+# FN<-giw_storage_capacity(dem=dem_jl, depressions=giws_jl, wetland=pnts[pnts$Name=="FN",])
+# BB<-giw_storage_capacity(dem=dem_jl, depressions=giws_jl, wetland=pnts[pnts$Name=="BB",])
+# GN<-giw_storage_capacity(dem=dem_jl, depressions=giws_jl, wetland=pnts[pnts$Name=="GN",])
+# GR<-giw_storage_capacity(dem=dem_jl, depressions=giws_jl, wetland=pnts[pnts$Name=="GR",])
+# ND<-giw_storage_capacity(dem=dem_jl, depressions=giws_jl, wetland=pnts[pnts$Name=="ND",])
+DK<-giw_storage_capacity(dem=dem_jl, depressions=giws_jl, wetland=pnts[pnts$Name=="DK",])
+
+```
+
+
+#Step 3: Estimate Storage Capacity
+```{r}
+inundate.fun<-function(n){
+  #Select basin
+  temp.shp<-basin.shp[n,]
+
+  #Convert to raster
+  res<-res(dem)[1]
+  ext<-raster(extent(temp.shp), res=res)
+  temp.grd<-rasterize(temp.shp, ext, field=1)
+  temp.grd<-temp.grd*dem
+  
+  #Create Minimum Raster
+  temp_min.grd<-temp.grd*0+minValue(temp.grd)
+  
+  #Create function to return conditional raster
+  Con<-function(condition, trueValue, falseValue){
+    return(condition * trueValue + (!condition)*falseValue)
+  }
+  
+  #Create function to calculate inundation area/volume
+  inundate<-function(z){
+    area<-Con(temp.grd>(temp_min.grd+z),0,1)
+    volume<-(((z+temp.grd)-temp_min.grd)*area)*res(area)[1]*res(area)[2]
+    outflow<-cellStats(area*boundaries(temp_min.grd, type="inner"), 'sum')
+    c(cellStats(area, 'sum')*res(area)[1]*res(area)[2], #area (m^2)
+      cellStats(volume, 'sum'), #volume (m^3)
+      outflow #Outflow length (3 m increments)
+    )
+  }
+  
+  #Conduct inundation calculation and store results in df
+  df<-c(n, #Unique identifer
+        minValue(temp.grd), #Minimum Elevation
+        xyFromCell(temp.grd,max(which.min(temp.grd)))[1], #X Value
+        xyFromCell(temp.grd,max(which.min(temp.grd)))[2], #Y Value
+        gArea(temp.shp), #area of shpape
+        c(t(sapply(seq(0.1,3,0.1),inundate))) #Area, Volume, and Spill Area
+  )
+  #print dataframe
+  df
+}
+```
+
+
+
+
+
+
+
+
+
+
+#A Few Notes:
+Next steps in the project include (1) developing a stream network, (2) [maybe] using contours to define internally draining basins, and (3) identifying relevant metrics [eg wetland order, specific storage capacity, connectivity, etcx], and [4] use iterative approach to defining the basin.  
+
+Also, currently, I use a whiel loop to get rid of other internally drainign basins.  Going forward, I'd liek to send all of the basins to the watershed tool at once. 

@@ -1,0 +1,106 @@
+---
+title: "Storage Capacity Estimate"
+output:
+  html_notebook:
+    toc: yes
+    toc_float: yes
+  html_document:
+    df_print: paged
+    toc: yes
+    toc_float: yes
+---
+
+The goal of this notebook is to estimate both contemporary storage capacity using the modified TDI approach developed by [Jones et al., [2018]](https://doi.org/10.1002/hyp.11405).  
+
+A few quick notes on data:
+
+1) All data is housed in the Palmer Lab direcotry (Choptank/Nate/Storage_Capacity)
+
+2) The 1m DEM was downloaded from http://imap.maryland.gov/Pages/lidar-dem-download-files.aspx
+
+3) This script will be housed at http://floodhydrology.com/DEM_Inundate/Dark_Bay_Demo.html
+
+#Step 1: Workspace Organization
+As always, the first step is to define relevant directories, aquire required librairies, and download input data. Note, this anlaysis requires a DEM, wetland location, and wetland polygon, all of which can be found in the "Storage_Capacity" subdirectory on the Palmer Lab server. Note, the script also requires the user to specify the location of the "storage capacity" data directory, a scratch workspsace, and location of the [Whitebox Tools](http://www.uoguelph.ca/~hydrogeo/WhiteboxTools/index.html) executable. For SESYNC users, note that Whitebox cannot be initiated from the RStudio Server, and you will need to use the WynAnalytics virtual machine.
+
+```{r, message=FALSE, warning=FALSE}
+#Clear memory (KH says not to do this...maybe I'll convert eventually)
+rm(list=ls(all=TRUE))
+
+#Defin relevant working directories
+data_dir<-"//storage.research.sesync.org/palmer-group-data/choptank/Nate/Storage_Capacity/"
+scratch_dir<-"C:\\ScratchWorkspace\\"
+wbt_dir<-"C:/WBT/whitebox_tools"
+
+#Download packages 
+library(raster)
+library(sp)
+library(rgdal)
+library(rgeos)
+library(dplyr)
+
+#Download package from GIT
+library(devtools)
+install_github("FloodHydrology/DEM_Inundate")
+library(DEM_inundate)
+
+#Download relevant data 
+dem<-raster(paste0(data_dir,"II_work/jl_dem"))
+pnt<-readOGR(paste0(data_dir,"II_Work/."),"Wetland_Locations")
+pnt<-pnt[pnt$Name=="DK",]
+burn<-readOGR(paste0(data_dir,"II_Work/."),"DarkBay_Burn")
+
+
+
+```
+
+
+
+Below, we delineate indiviudal basins for each wetland. 
+
+```{r, message=FALSE, warning=FALSE}
+#Burn wetland into DEM
+dem_burn<-wetland_burn(dem, burn)
+
+#Identify depressions in DEM
+giws<-GIW_identification(
+        dem=dem_burn, 
+        min_size=100, 
+        workspace="C:\\ScratchWorkspace\\", 
+        wbt_path="C:/WBT/whitebox_tools")
+
+#Identify wetland subshed
+subshed<-GIW_subshed_delineation(
+        dem=dem_burn, 
+        depressions=giws, 
+        wetland=pnts[pnts$Name=="DK",])
+
+#Devleop stage storage relationship
+storage<-GIW_stage_storage(
+        subshed = subshed, 
+        dem = dem,
+        z_max = 1,
+        dz = 0.1)
+
+#Pring max inundation extent
+inundation<-GIW_max_inundation(
+  subshed, #wateshed raster
+  dem,     #DEM for the analysis
+  storage #Storage Curve 
+  )
+
+```
+
+
+
+
+
+
+
+
+
+
+#A Few Notes:
+Next steps in the project include (1) developing a stream network, (2) [maybe] using contours to define internally draining basins, and (3) identifying relevant metrics [eg wetland order, specific storage capacity, connectivity, etcx], and [4] use iterative approach to defining the basin.  
+
+Also, currently, I use a whiel loop to get rid of other internally drainign basins.  Going forward, I'd liek to send all of the basins to the watershed tool at once. 

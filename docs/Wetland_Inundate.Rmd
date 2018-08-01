@@ -1,0 +1,488 @@
+---
+title: "Wetland Inundate Code"
+output:
+  html_document:
+    df_print: paged
+    toc: yes
+    toc_float: yes
+  html_notebook:
+    toc: yes
+    toc_float: yes
+---
+
+# Code Description
+Below is code for a simple inundation model. Sometimes called a bathtub model, this analysis estimates the extent and volume of inundation based on (1) specified elevation, (2) digital elevation model, and (3) location of depressional wetland. The analysis is loosely based on [Jones et al., [2018]](https://doi.org/10.1002/hyp.11405) and the [Topographic Depression Identification Model (TDI)](https://doi.org/10.1002/2013GL059114). 
+
+# Step 1: Create Synthetic DEM
+Normally, you would just read in a DEM for the analysis. However, for the purposes of this tutorial, we will make our own DEM with depresional wetlands. [So, just run this code. Don't worry too much about the contents for now!] 
+
+## 1.1 Setup your workspace
+As always, setup your workspace and download appropriate packages.
+```{r, message=FALSE, warning=FALSE, warning=FALSE}
+#Clear Memory
+rm(list=ls(all=TRUE))
+
+#Download packages 
+library(raster)
+library(sp)
+library(rgdal)
+library(rgeos)
+library(actuar)
+library(poweRlaw)
+library(dplyr)
+```
+
+## 1.2 Define Variables
+Define variables that describe the synthetic landscape
+```{r, message=FALSE, warning=FALSE}
+#lanscape size (Note, it will be a square)
+area<-1000 #ha  
+
+#Size of cell_size cell (e.g. length of one side)
+cell_size<-3 #m
+
+#wetland depth
+invert<-1 #m
+
+#landscape slope
+slope<-0.001 #m/m
+```
+
+## 1.3 Create blank raster
+Create raster that using variables listed above
+```{r, message=FALSE, warning=FALSE}
+#Convert units to meters
+area<-area*10000 #convert to m^2
+
+#Define coordinates
+x<-matrix(0, nrow=sqrt(area)/cell_size, ncol=sqrt(area)/cell_size)
+y<-matrix(0, nrow=sqrt(area)/cell_size, ncol=sqrt(area)/cell_size)
+z<-matrix(0, nrow=sqrt(area)/cell_size, ncol=sqrt(area)/cell_size)
+
+#Add coordinates
+for(i in 1:(sqrt(area)/cell_size)){
+  x[,i]<-i*cell_size-(cell_size/2)
+  y[i,]<-i*cell_size-(cell_size/2)
+  }
+
+#Add elevation data (valley slope)
+interp<-approxfun(data.frame(c(1,sqrt(area)/cell_size), c(100, 100-slope*sqrt(area))))
+for(i in 1:(sqrt(area)/cell_size)){z[i,]<-interp(i)}
+
+#Add natural variation
+z_var<-matrix(rnorm(length(z), mean=1, sd=0.001), nrow=sqrt(area)/cell_size, ncol=sqrt(area)/cell_size)
+z<-z*z_var
+
+#Create Raster
+dem <-raster(z,
+              xmn=range(x)[1], xmx=range(x)[2],
+              ymn=range(y)[1], ymx=range(y)[2]
+)
+
+#clean up workspace
+remove(list=c("x","y","z","i","slope"))
+```
+
+## 1.4 Add wetlands to raster
+```{r, message=FALSE, warning=FALSE}
+#Determine number, size, and location of wetlands~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+#determine number and size of wet
+wetland_area<-area*0.10 #From Van Meter and Basu 2015 (Des Moines Lobe)
+
+#Iterate through wetland scenarios until correct area
+set.seed(1)
+n.wetlands<-10
+pnts<-rep(wetland_area/n.wetlands, n.wetlands)
+
+#Randomly select location of each wetland
+pnts<-data.frame(coordinates(sampleRandom(dem,n.wetlands, sp=T)), pnts)
+  colnames(pnts)<-c("x","y", "area_m2")
+
+#add wetid data
+pnts<-pnts[order(-pnts$area_m2),]
+pnts$WetID<-seq(1,length(pnts[,1]))
+
+#calculate wetland volume and depth
+p<-4 #shape factor from Hayashi and Kamp [200]
+pnts$volume_m3<-(0.25*(pnts$area_m2/10000)^1.4742)*10000 #Equation  from Wu and Lane [2016]
+pnts$max_depth_m<-(pnts$volume_m3*(1+2/p))/pnts$area_m2
+  
+#add z data and create shp
+pnts$z<-raster::extract(dem, pnts[,c("x","y")])
+
+#add data about the watershed depth
+pnts$ws_depth<-abs(rnorm(nrow(pnts),2,0.5))
+
+#Create Function to add wetland shape (with bathymetry)~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+fun<-function(WetID){
+  #Setup~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  #define variables
+  area_max<-pnts$area_m2[pnts$WetID==WetID]
+  x<-pnts$x[pnts$WetID==WetID]
+  y<-pnts$y[pnts$WetID==WetID]
+  z<-pnts$z[pnts$WetID==WetID]
+  ws_depth<-pnts$ws_depth[pnts$WetID==WetID]
+  depth<-pnts$max_depth_m[pnts$WetID==WetID]
+  
+  #create circle function to define circle
+  circle.fun<-function(area, x, y){
+    radius<-(area/pi)^.5
+    circle<-seq(0, 2 * pi, length.out = 2*pi*sqrt(area/pi))
+    circle<-cbind(x + radius * sin(circle), y + radius * cos(circle))
+    circle
+  }
+  
+  #Represent bathymetry with points~~~~~~~~~~~~~~~~~~~~~~~~
+  #Calculate variables
+  radius<-(area_max/pi)^0.5
+  n<-round(radius/cell_size)
+  
+  #create dataframe to house points
+  bath<-data.frame(matrix(0, ncol=3))
+    colnames(bath)<-c("x","y","z")
+  bath$x[1]<-x
+  bath$y[1]<-y
+  bath$z[1]<-z-depth
+    
+  #Add "rings" to bath df
+  for(i in 1:(n+1)){
+    area_ring<-pi*(i*cell_size)^2
+    df<-data.frame(circle.fun(area_ring, x,y),depth*(i*cell_size/radius)^p+(z-depth))
+      colnames(df)<-c("x","y","z")
+    bath<-rbind(bath,df)
+  }
+  
+  #Adjust elevation for watershed invert elevation
+  bath$z<-bath$z-ws_depth
+  
+  #Represent watershed surface~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  #Calculate variables
+  ws_radius<-(area_max*10/pi)^0.5
+  m<-round((ws_radius-radius)/cell_size)
+  
+  #create dataframe to house points
+  ws<-data.frame(matrix(0, ncol=3))
+  colnames(ws)<-c("x","y","z")
+
+  #Add "rings" to ws df
+  for(i in 0:m){
+    area_ring<-pi*(i*cell_size+radius)^2
+    df<-data.frame(circle.fun(area_ring, x,y),ws_depth/(ws_radius-radius)*(i*cell_size)+(z-ws_depth))
+    colnames(df)<-c("x","y","z")
+    ws<-rbind(ws,df)
+  }
+  ws<-ws[-1,]
+  
+  #Create raster of Wetland Bathymetry~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  #Conbime bathymetry and ws surface
+  bath<-rbind(bath,ws)
+  
+  #Remove points that are > current dem surface
+  bath$dem<-raster::extract(dem,bath[,1:2])
+  bath<-bath[bath$z<bath$dem,]
+  
+  #If any points are left:
+  if(nrow(bath)>1){
+  
+    #Create gird
+    wetland.grd<-rasterize(bath[,1:2], dem, bath[,3])
+    
+    #Create Clip
+    clip<-wetland.grd*0
+    clip[is.na(clip)] <- 1
+    wetland.grd[is.na(wetland.grd)] <- 0
+    
+    #append dem
+    dem<-dem*clip+wetland.grd
+    
+    #assign dem to the global environment
+    assign('dem', dem, envir = .GlobalEnv)
+  }
+}
+
+#Run function
+for(i in 1:length(pnts[,1])){fun(i)}
+
+#Smooth with raster filter
+dem<-focal(dem, w=matrix(1/25,nrow=5,ncol=5)) 
+
+```
+
+## 1.5 Plot synthetic landscape!
+Below is a plot of the synthetic landscape we will use for delineation today!
+```{r, echo=F}
+zData<-as.matrix(dem)
+x = (cell_size * (1:nrow(zData)))    
+y = (cell_size * (1:ncol(zData)))
+nrzmat <- nrow(zData)
+nczmat <- ncol(zData)
+facetValues <- (zData[-1, -1] + zData[-1, -nczmat] + zData[-nrzmat, -1] + zData[-nrzmat, -nczmat])/4
+nbcol <- 99
+color <- c("grey",terrain.colors(nbcol))
+facetcol <- cut(facetValues, nbcol+1)
+res = persp(x, y, z = zData*50, theta = 120, phi = 45,
+            col = color[facetcol],
+            scale = FALSE, expand = 0.75, 
+            ltheta = 75, shade = 0.75, border = NA,
+            box = F, ticktype = "detailed")
+
+```
+
+# Step 2: Delineate Wetland Basins
+Now that we have created our synthetic landscape, we can seperate it into discrete endorheic (i.e., internally draining) basins.  This step requires the use of the RPyGeo package. It's worth noting, this package has to be run on a windows machine, requires both ArcGIS and Python, and require read/write access to the hard drive. For more information, read the documentation [here](https://cran.r-project.org/web/packages/RPyGeo/RPyGeo.pdf). 
+
+##2.1 Setup RPyGeo workspace
+Here, you will need to supply both path to python path and a seperate workspace.  Note, the example below was configured for use on the SESYNC WinAnalytics Virtual machine.  These paths will vary depending on your machine and specific access priveledges. 
+```{r, message=FALSE, warning=FALSE}
+#Read RPyGeo Library
+require(RPyGeo)
+
+#Create python environment
+py.env<-rpygeo.build.env(python.path = "C:\\Python27\\ArcGIS10.2\\",
+                         workspace = "C:\\ScratchWorkspace\\",
+                         overwriteoutput = 1)
+
+#Set working directory to scratchworkspace 
+setwd("C:\\ScratchWorkspace\\")
+```
+
+##2.2 Identify internally draining basins
+Here, you will pass files between the R and ArcGIS environments. When using Raster package functions (e.g., focal), the raster will need to be in the R environment.  However, if you need to use ArcGIS geoprocessing tools, the raster has to be exported to the predefined workspace before completing the ArcGIS task.  Once the new ArcGIS tasks has been completed, the updated file will then need to be read BACK into the R environment. 
+
+Cleare as mud right?  See steps below: 
+```{r, message=FALSE, warning=FALSE}
+  
+  #Convert DEM to planar coordinates 
+  dem@crs<-CRS("+proj=utm +zone=17 +ellps=WGS84 +datum=WGS84 +units=m +no_defs")
+    #Note, in this case of this tutorial, we just simply assigned a planar coordinate system. 
+    #In real life, you will want to reproject using projectRaster()
+
+  #Filter the DEM
+  dem_filter.grd<- focal(dem, w=focalWeight(dem, 5, "Gauss"))
+  dem_filter.grd<- focal(dem_filter.grd, w=focalWeight(dem, 5, "Gauss"))
+  dem_filter.grd<- focal(dem_filter.grd, w=focalWeight(dem, 5, "Gauss"))
+  dem_filter.grd@crs<-dem@crs
+  writeRaster(dem_filter.grd,
+              file="C:\\ScratchWorkspace\\dem_filter.asc",
+              overwrite=T)
+
+  #Fill sinks (up to 0.1m)
+  rpygeo.geoprocessor(fun="Fill_sa",
+                      c("dem_filter.asc",
+                        "dem_fill",
+                         0.3048/2),
+                      env=py.env)
+  
+  #Compute Flow Direction
+  rpygeo.FlowDirection.sa("dem_fill","fdr_esri", env=py.env)
+  
+  #Identify Sink
+  rpygeo.Sink.sa("fdr_esri", "sink", env=py.env)
+  
+  #Run basin tool
+  rpygeo.geoprocessor(fun="Basin_sa",
+                      c("fdr_esri","basin"),
+                      env=py.env)
+  
+  #Convert sink and basin to polygons
+  rpygeo.geoprocessor(fun="RasterToPoint_conversion",
+                      c("sink", "sink.shp", "VALUE"),
+                      env=py.env)
+  
+  rpygeo.geoprocessor(fun="RasterToPolygon_conversion",
+                      c("basin", "basin.shp", "NO_SIMPLIFY","VALUE"),
+                      env=py.env)
+  
+  #Bring basin shapes back into the R environment
+  basin.shp<-readOGR("C:\\ScratchWorkspace\\.","basin")
+  
+  #For the sake of this exercise, lets remove non-wetland basins
+  basin.shp<-basin.shp[rank(gArea(basin.shp, byid=T))>(length(basin.shp)-10), ]
+  
+```
+
+##2.3 Estimate storage capacity using the TDI
+First, we will create a function to estimate storage capacity for each basin based on wetland stage. 
+```{r, message=FALSE, warning=FALSE}
+inundate.fun<-function(n){
+  #Select basin
+  temp.shp<-basin.shp[n,]
+
+  #Convert to raster
+  res<-res(dem)[1]
+  ext<-raster(extent(temp.shp), res=res)
+  temp.grd<-rasterize(temp.shp, ext, field=1)
+  temp.grd<-temp.grd*dem
+  
+  #Create Minimum Raster
+  temp_min.grd<-temp.grd*0+minValue(temp.grd)
+  
+  #Create function to return conditional raster
+  Con<-function(condition, trueValue, falseValue){
+    return(condition * trueValue + (!condition)*falseValue)
+  }
+  
+  #Create function to calculate inundation area/volume
+  inundate<-function(z){
+    area<-Con(temp.grd>(temp_min.grd+z),0,1)
+    volume<-(((z+temp.grd)-temp_min.grd)*area)*res(area)[1]*res(area)[2]
+    outflow<-cellStats(area*boundaries(temp_min.grd, type="inner"), 'sum')
+    c(cellStats(area, 'sum')*res(area)[1]*res(area)[2], #area (m^2)
+      cellStats(volume, 'sum'), #volume (m^3)
+      outflow #Outflow length (3 m increments)
+    )
+  }
+  
+  #Conduct inundation calculation and store results in df
+  df<-c(n, #Unique identifer
+        minValue(temp.grd), #Minimum Elevation
+        xyFromCell(temp.grd,max(which.min(temp.grd)))[1], #X Value
+        xyFromCell(temp.grd,max(which.min(temp.grd)))[2], #Y Value
+        gArea(temp.shp), #area of shpape
+        c(t(sapply(seq(0.1,3,0.1),inundate))) #Area, Volume, and Spill Area
+  )
+  #print dataframe
+  df
+}
+
+```
+Execute the function for the 10 wetlands!
+```{r, message=FALSE, warning=FALSE}
+df<-lapply(seq(1,10),inundate.fun)
+df<-data.frame(do.call(rbind, df))
+colnames(df)<-c("basin.id", 
+                "min_elevation", 
+                "long", 
+                "lat", 
+                "basin_area", 
+                paste0("area_",seq(0.1,3,0.1)),
+                paste0("volume_",seq(0.1,3,0.1)),
+                paste0("spill_length",seq(0.1,3,0.1)))
+```
+Now, determine storage capacity based on spill boundary threshold. [Note, here we aren't goign to worry about ditches - ie potential storage capacity -- because we didn't insert ditches in to the synthetic landscape model.]
+```{r, message=FALSE, warning=FALSE}
+#Create function to estimate spill elevation
+spill.fun<-function(n){
+  #Gather overflow data
+  df<-df[n,]
+  df<-data.frame(seq(0.1,3, 0.1),
+                 as.numeric(paste(df[6:35])),
+                 as.numeric(paste(df[36:65])),
+                 as.numeric(paste(df[66:95])))
+  colnames(df)<-c("z","area", "volume", "spill")
+  
+  #Define change in spill length
+  df$ds<-0
+  df$ds[1]<-0
+  df$ds[2:30]<-df$spill[2:30]-df$spill[1:29]
+  
+  #Print "spill" events
+  #If no spill <2m
+  if(sum(df$spill, na.rm=T)==0){
+    c(n,df$z[30], df$area[30], df$volume[30],df$z[30], df$area[30], df$volume[30])
+  }else{
+    #If no change in spill >=3
+    if(max(df$ds,na.rm=T)<3){
+      #If max spill length less than 3m
+      if(max(df$spill, na.mr=T)>=3){
+        c(n, #Basin ID
+        min(df$z[df$ds>=1]), #depth of ditch
+        min(df$area[df$ds>=1]), #area of ditch
+        min(df$volume[df$ds>=1]), #volume of ditch
+        min(df$z[df$spill>3]), #depth of wetland
+        min(df$area[df$spill>3]), #area of wetland
+        min(df$volume[df$spill>3])) #volume of wetland
+      }else{
+        c(n, #Basin ID
+        min(df$z[df$ds>=1]), #depth of ditch
+        min(df$area[df$ds>=1]), #area of ditch
+        min(df$volume[df$ds>=1]), #volume of ditch
+        min(df$z[df$ds>=1]), #depth of wetland
+        min(df$area[df$ds>=1]), #area of wetland
+        min(df$volume[df$ds>=1])) #volume of wetland
+        }
+    }else{
+      #If change in spill >3
+      c(n, #Basin ID
+      min(df$z[df$ds>=1]), #depth of ditch
+      min(df$area[df$ds>=1]), #area of ditch
+      min(df$volume[df$ds>=1]), #volume of ditch
+      min(df$z[df$ds>=3]), #depth of wetland
+      min(df$area[df$ds>=3]), #area of wetland
+      min(df$volume[df$ds>=3])) #volume of wetland
+      }
+    }
+}
+
+#Execute the function
+output<-lapply(seq(1,10),spill.fun)
+output<-data.frame(do.call(rbind, output))
+colnames(output)<-c("n",
+                    "d_ditch", 
+                    "a_ditch", 
+                    "v_ditch", 
+                    "d_wetland", 
+                    "a_wetland", 
+                    "v_wetland")
+
+#Merge with master dataframe                
+df<-merge(df, output, by.x='basin.id', by.y='n')
+```
+
+# Step 3: Plot!!!
+Finally, the step you've been waiting for! Let's plot this bad boy! 
+
+## 3.1 Create output raster
+Well, not so fast. First we have to create an output raster
+```{r, message=FALSE, warning=FALSE}
+#Create function to create inundatoin raster for each basin
+inundate.fun<-function(n){
+  #Select basin
+  temp.shp<-basin.shp[n,]
+
+  #Convert to raster
+  res<-res(dem)[1]
+  ext<-raster(extent(temp.shp), res=res)
+  temp.grd<-rasterize(temp.shp, ext, field=1)
+  temp.grd<-temp.grd*dem
+  
+  #Create Minimum Raster
+  temp_min.grd<-temp.grd*0+minValue(temp.grd)
+  
+  #Create function to return conditional raster
+  Con<-function(condition, trueValue, falseValue){
+    return(condition * trueValue + (!condition)*falseValue)
+  }
+  
+  #Create function to calculate inundation area/volume
+  depth<-df$d_wetland[n]
+  inundation<-Con(temp.grd>(temp_min.grd+depth),0,1)
+  
+  #Change inundation extent
+  inundation<-crop(extend(inundation, dem), dem)
+  inundation[is.na(inundation)]<-0
+  
+  #Export Inundation Raster
+  inundation
+}
+
+#Now, use a loop and raster algebra to compline inundation for all 10 basins
+wetland<-dem*0
+for(i in 1:10){
+  print(i)
+  temp<-inundate.fun(i)
+  wetland<-wetland+temp
+}
+wetland[wetland==0]<-NA
+```
+
+## 3.2 Plotting
+```{r, message=FALSE, warning=FALSE}
+plot(dem)
+plot(basin.shp, add=T)
+plot(wetland, col="blue", add=T)
+```
+ 
+
+For more infomration, contact Nate Jones (njones@sesync.org) 
+ 
