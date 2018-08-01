@@ -1,11 +1,11 @@
 ---
 title: "Storage Capacity Estimate"
 output:
-  html_notebook:
-    toc: yes
-    toc_float: yes
   html_document:
     df_print: paged
+    toc: yes
+    toc_float: yes
+  html_notebook:
     toc: yes
     toc_float: yes
 ---
@@ -41,16 +41,14 @@ library(dplyr)
 
 #Download package from GIT
 library(devtools)
-install_github("FloodHydrology/DEM_Inundate")
-library(DEM_inundate)
+install_github("FloodHydrology/InundationHydRology")
+library(InundationHydRology)
 
 #Download relevant data 
 dem<-raster(paste0(data_dir,"II_work/jl_dem"))
 pnt<-readOGR(paste0(data_dir,"II_Work/."),"Wetland_Locations")
 pnt<-pnt[pnt$Name=="DK",]
 burn<-readOGR(paste0(data_dir,"II_Work/."),"DarkBay_Burn")
-
-
 
 ```
 
@@ -60,7 +58,7 @@ Below, we delineate indiviudal basins for each wetland.
 
 ```{r, message=FALSE, warning=FALSE}
 #Burn wetland into DEM
-dem_burn<-wetland_burn(dem, burn)
+dem_burn<-GIW_burn(dem, burn)
 
 #Identify depressions in DEM
 giws<-GIW_identification(
@@ -73,12 +71,12 @@ giws<-GIW_identification(
 subshed<-GIW_subshed_delineation(
         dem=dem_burn, 
         depressions=giws, 
-        wetland=pnts[pnts$Name=="DK",])
+        wetland=pnt)
 
 #Devleop stage storage relationship
 storage<-GIW_stage_storage(
         subshed = subshed, 
-        dem = dem,
+        dem = dem_burn,
         z_max = 1,
         dz = 0.1)
 
@@ -91,16 +89,3 @@ inundation<-GIW_max_inundation(
 
 ```
 
-
-
-
-
-
-
-
-
-
-#A Few Notes:
-Next steps in the project include (1) developing a stream network, (2) [maybe] using contours to define internally draining basins, and (3) identifying relevant metrics [eg wetland order, specific storage capacity, connectivity, etcx], and [4] use iterative approach to defining the basin.  
-
-Also, currently, I use a whiel loop to get rid of other internally drainign basins.  Going forward, I'd liek to send all of the basins to the watershed tool at once. 
