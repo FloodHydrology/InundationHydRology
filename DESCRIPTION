@@ -1,0 +1,10 @@
+Package: InundationHydRology
+Type: Package
+Title: Inundation Hydrology
+Version: 0.1.0
+Author: C. Nathan Jones
+Maintainer: C. Nathan Jones <njones@sesync.org>
+Description: More to come...
+License: MIT
+Encoding: UTF-8
+LazyData: true
