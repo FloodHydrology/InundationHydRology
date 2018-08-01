@@ -14,9 +14,9 @@ The goal of this notebook is to estimate both contemporary storage capacity usin
 
 A few quick notes on data:
 
-1) All data is housed in the Palmer Lab direcotry (Choptank/Nate/Storage_Capacity)
+1) All data is housed in the Palmer Lab subdirectory.  (Choptank/Nate/Storage_Capacity)
 
-2) The 1m DEM was downloaded from http://imap.maryland.gov/Pages/lidar-dem-download-files.aspx
+2) The 1m DEM was downloaded from [imap.maryland.gov](http://imap.maryland.gov/Pages/lidar-dem-download-files.aspx)
 
 3) This script will be housed at [floodhydrology.com](http://floodhydrology.com/InundationHydRology/Dark_Bay_Demo.html)
 
