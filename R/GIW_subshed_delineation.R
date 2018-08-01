@@ -85,7 +85,7 @@ GIW_subshed_delineation<-function(
   
   #If there are other basins complete the analysis again to remove
   depressions[depressions==raster::extract(depressions, wetland)]<-NA
-  n_depression<-length(unique(depressions@data@values)-1)
+  n_depression<-length(unique(depressions@data@values))-1
   while(n_depression>0){
     #Extract depression of interest
     wetland_dep<-depressions
@@ -117,10 +117,9 @@ GIW_subshed_delineation<-function(
     
     #Recalculate nubmer of depressions
     depressions<-depressions*watershed
-    n_depression<-length(unique(depressions@data@values)-1)
+    n_depression<-length(unique(depressions@data@values))-1
   }
   
   #Export Watershed
-  writeRaster(watershed, paste0(paste(wetland$Name),"_subshed.asc"), overwrite=T)
   watershed
 }
