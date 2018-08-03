@@ -1,0 +1,280 @@
+---
+title: "Chesapeake Bay Watershed and LULC Analysis"
+output:
+  html_notebook:
+    toc: yes
+    toc_float: yes
+  html_document:
+    df_print: paged
+    toc: yes
+    toc_float: yes
+---
+
+The goal of this notebook is to demonstrate the watershed delineation technique we plan to employ in the CBW-LULC anlaysis. This computation relies on both the spatial capabilities of R (Raster, sp, and RGDAL packages) in addition to the hydrologic analysis tools in [WhiteBox Tools](http://www.uoguelph.ca/~hydrogeo/WhiteboxTools/index.html) scripting software. Required dataset inlcude a [NHDplus 30-m DEM](http://www.horizon-systems.com/NHDPlus/NHDPlusV1_02.php), [the gagesII database](https://water.usgs.gov/GIS/metadata/usgswrd/XML/gagesII_Sept2011.xml), and finally, [NLCD-LULC data](https://water.usgs.gov/GIS/metadata/usgswrd/XML/gagesII_Sept2011.xml) from the USGS.
+
+For more on wateshed delineation in WhiteBox GAT and WhiteBoxTools, [see this block post from Jon Lindsay](https://whiteboxgeospatial.wordpress.com/2014/05/04/mapping-watersheds-in-whitebox-gat/).
+
+#Step 1: Data Organization
+Note, data is currently housed in Nate's SESYNC workspace.  He will eventually migrate this to the Palmer Lab folder. 
+
+```{r, message=FALSE, warning=FALSE, results='hide'}
+#Clear Memory
+rm(list=ls(all=TRUE))
+
+#Define relevant working directories
+data_dir<-"//storage.research.sesync.org/njones-data/Research Projects/LULC_CBW/"
+scratch_dir<-"C:\\ScratchWorkspace\\"
+wbt_dir<-"C:/WBT/whitebox_tools"
+
+#Add appropriate libararies
+#install.packages(c('RSAGA', 'rgdal', 'rgeos', 'raster', 'sp', 'dplyr', 'magrittr'))
+library(RSAGA)
+library(rgdal)
+library(rgeos)
+library(raster)
+library(sp)
+library(sf)
+library(dplyr)
+library(magrittr)
+library('fasterize')
+
+#Download package from GIT
+library(devtools)
+install_github("FloodHydrology/InundationHydRology")
+library(InundationHydRology)
+
+#Download required data
+dem<-raster(paste0(data_dir,"Spatial_Data/NHDPlus02/Elev_Unit_a/elev_cm"))
+  p<-dem@crs
+gages<-readOGR(paste0(data_dir,"Spatial_Data/NHDPlus02/StreamGageEvent.shp"))
+  gages<-gages[gages$SUBREGION %in% c("0205","0206","0207","0208"),]
+  gages<-spTransform(gages, p)
+HUC08<-readOGR(paste0(data_dir,"Spatial_Data/NHDPlus02/Subbasin.shp"))
+  HUC08<-spTransform(HUC08, p)
+LULC2001<-raster(paste0(data_dir,"Spatial_Data/nlcd_2001_landcover_2011_edition_2014_10_10/nlcd_2001_landcover_2011_edition_2014_10_10/nlcd_2001_landcover_2011_edition_2014_10_10.img"))
+LULC2006<-raster(paste0(data_dir,"Spatial_Data/nlcd_2006_landcover_2011_edition_2014_10_10/nlcd_2006_landcover_2011_edition_2014_10_10.img"))
+LULC2011<-raster(paste0(data_dir,"Spatial_Data/nlcd_2011_landcover_2011_edition_2014_10_10/nlcd_2011_landcover_2011_edition_2014_10_10.img"))
+
+```
+
+#Step 2: Prep Data!
+Here we need to (1) calculate flow direction raster and (2) convert the stream into a raster. 
+
+```{r, message=FALSE, warning=FALSE, results='hide'}
+LULC_WatershedAnalysis<-function(
+  dem=dem,  
+  pnts=pnts, 
+  streams=streams,
+  mask=mask, 
+  threshold=1000,
+  LULC2001=LULC2001,
+  LULC2006=LULC2006,
+  LULC2011=LULC2011){
+
+#Mask dem and gages
+dem<-crop(dem, mask)
+pnts<-pnts[mask,]
+
+#Add UID to pnts
+pnts$FID<-seq(1,length(pnts))
+
+#Export DEM and stream layer to local working directory
+writeRaster(dem, paste0(scratch_dir,"dem.tif"), overwrite=T)
+writeOGR(pnts,paste0(scratch_dir,"."),"gages", driver = "ESRI Shapefile", overwrite_layer = T)
+
+#Fill "single cell" depressions
+system(paste(paste(wbt_dir),
+             "-r=FillSingleCellPits",
+             paste0("--wd=",scratch_dir),
+             "--dem='dem.tif'",
+             "-o='dem_breach_minor.tif'"))
+
+#Gaussian Filter
+system(paste(paste(wbt_dir), 
+             "-r=GaussianFilter", 
+             paste0("--wd=",scratch_dir),
+             "-i='dem_breach_minor.tif'", 
+             "-o='dem_filter.tif'",
+             "--sigma=3"))
+
+#Breach larger depressions
+system(paste(paste(wbt_dir), 
+             "-r=BreachDepressions", 
+             paste0("--wd=",scratch_dir),
+             "--dem='dem_filter.tif'", 
+             "-o='dem_breach_major.tif'"))
+
+#Create Flow Accumulation Raster
+system(paste(paste(wbt_dir), 
+             "-r=D8FlowAccumulation", 
+             "--out_type='cells'",
+             paste0("--wd=",scratch_dir),
+             "--dem='dem_breach_major.tif'", 
+             "-o='fac.tif'"))
+
+#Create Stream Raster [fac>1000]
+fac<-raster(paste0(scratch_dir,"fac.tif"))
+fac[fac<threshold]<-NA
+fac<-fac*0+1
+fac@crs<-p
+writeRaster(fac,paste0(scratch_dir,"flowgrid.tiff"), overwrite=T)
+
+#Run flow direction [note we can skip breaching and/or filling sinks b/c we are using NHD data
+system(paste(paste(wbt_dir), 
+             "-r=D8Pointer", 
+             paste0("--wd=",scratch_dir),
+             "--dem='dem_breach_major.tif'", 
+             "-o='fdr.tif'",
+             "--out_type=sca"))
+
+#Create pour pnt raster
+system(paste(paste(wbt_dir), 
+             "-r=VectorPointsToRaster", 
+             paste0("--wd=",scratch_dir),
+             "-i='gages.shp'", 
+             "--field=FID",
+             "-o=pp.tif",
+             "--assign=min",
+             "--nodata",
+             "--base=dem.tif"))
+
+#Jenson Snap Pour point
+system(paste(paste(wbt_dir),
+             "-r=JensonSnapPourPoints", 
+             paste0("--wd=",scratch_dir),
+             "--pour_pts='pp.tif'", 
+             "--streams='flowgrid.tif'",
+             "-o='pp_snap.tif",
+             "--snap_dist=250"
+             ))
+
+#Convert back to point file
+snapgrid<-raster(paste0(scratch_dir,"pp_snap.tif"))
+snappnts<-rasterToPoints(snapgrid, fun=function(x){x>0})
+snappnts<-SpatialPointsDataFrame(snappnts[,1:2], data.frame(ID=snappnts))
+
+#Create function to delineate watershed and tabulate LULC
+fun<-function(ID){
+
+  #Select Pour Point and Export
+  pnt<-snappnts[snappnts$ID.pp_snap==ID,]
+  UID<-pnts$SOURCE_FEA[pnts$FID==ID]
+  writeOGR(pnt,paste0(scratch_dir,"."),"snap", driver = "ESRI Shapefile", overwrite_layer=T)
+  
+  #Watershed Tool
+  system(paste(paste(wbt_dir), 
+               "-r=Watershed", 
+               paste0("--wd=",scratch_dir),
+               "--d8_pntr='fdr.tif'",
+               "--pour_pts='snap.shp'", 
+               paste0("-o='watershed_",UID,".tif'")))
+
+  #Import watershed raster into R environment
+  ws_grid<-raster(paste0(scratch_dir,"watershed_",UID,".tif"), overwrite=T)
+  
+  #Lmit LULC grids to watershed
+  LULC2001<-LULC2001*ws_grid
+  LULC2006<-LULC2006*ws_grid
+  LULC2011<-LULC2011*ws_grid
+  
+  #Calculate Watershed Area
+  cell_size<-res(ws_grid)[1]*res(ws_grid)[2]
+  area<-cellStats(ws_grid, sum)*cell_size
+  
+  #Calculate LULC area
+  #Create output data.frame
+  output<-data.frame(ID=ID,ws_area = area)
+  
+  #Caluclate water area
+  output$urban2001<-length(LULC2001[LULC2001>=20 & LULC2001<30])*cell_size
+  output$urban2006<-length(LULC2006[LULC2006>=20 & LULC2006<30])*cell_size
+  output$urban2011<-length(LULC2011[LULC2011>=20 & LULC2011<30])*cell_size
+  
+  #Calculate barren area
+  output$barren2001<-length(LULC2001[LULC2001>=30 & LULC2001<40])*cell_size
+  output$barren2006<-length(LULC2006[LULC2006>=30 & LULC2006<40])*cell_size
+  output$barren2011<-length(LULC2011[LULC2011>=30 & LULC2011<40])*cell_size
+  
+  #Calculate forest area
+  output$forest2001<-length(LULC2001[LULC2001>=40 & LULC2001<50])*cell_size
+  output$forest2006<-length(LULC2006[LULC2006>=40 & LULC2006<50])*cell_size
+  output$forest2011<-length(LULC2011[LULC2011>=40 & LULC2011<50])*cell_size
+  
+  #Calculate shrub area
+  output$shrub2001<-length(LULC2001[LULC2001>=50 & LULC2001<60])*cell_size
+  output$shrub2006<-length(LULC2006[LULC2006>=50 & LULC2006<60])*cell_size
+  output$shrub2011<-length(LULC2011[LULC2011>=50 & LULC2011<60])*cell_size
+  
+  #Calculate Herbaceous area
+  output$herb2001<-length(LULC2001[LULC2001>=70 & LULC2001<80])*cell_size
+  output$herb2006<-length(LULC2006[LULC2006>=70 & LULC2006<80])*cell_size
+  output$herb2011<-length(LULC2011[LULC2011>=70 & LULC2011<80])*cell_size
+  
+  #Calculate Crop area
+  output$crop2001<-length(LULC2001[LULC2001>=80 & LULC2001<90])*cell_size
+  output$crop2006<-length(LULC2006[LULC2006>=80 & LULC2006<90])*cell_size
+  output$crop2011<-length(LULC2011[LULC2011>=80 & LULC2011<90])*cell_size
+  
+  #Calculate Wetlands area
+  output$wetland2001<-length(LULC2001[LULC2001>=90])*cell_size
+  output$wetland2006<-length(LULC2006[LULC2006>=90])*cell_size
+  output$wetland2011<-length(LULC2011[LULC2011>=90])*cell_size
+  
+  #Export output
+  output
+}
+
+#Run function
+output<-lapply(X = snappnts$ID.pp_snap, FUN = fun)
+output<-do.call(rbind, output)
+
+#merge output
+pnts<-pnts@data
+pnts<-merge(pnts, output, by.x="FID", by.y="ID")
+
+#Export output
+pnts
+}
+
+```
+
+
+#Step 3: Now lets delineate that watershed
+
+```{r, message=FALSE, warning=FALSE, results='hide'}
+#Clean up gages data
+gages@data<-gages@data[,c("SOURCE_FEA","DA_SQ_MILE")]
+
+#Select Subbasin
+mask<-HUC08
+mask<-mask[gages,]
+
+#Create wrapper function
+fun<-function(n){
+  tryCatch(LULC_WatershedAnalysis(  
+              dem=dem,  
+              pnts=gages, 
+              mask=mask[n,], 
+              threshold=1000,
+              LULC2001=LULC2001,
+              LULC2006=LULC2006,
+              LULC2011=LULC2011), 
+           error=function(e) c(n, rep(0,24)))}
+
+#Run function
+x<-lapply(seq(1,length(mask)), fun)
+
+#pull together data
+output<-bind_rows(x)
+
+#Compare area etimates
+output<-output[output$DA_SQ_MILE>0,]
+output<-output[output$DA_SQ_MILE<2000,]
+output$ws_area<-output$ws_area/(1000^2)/(1.60934^2)
+plot(ws_area~DA_SQ_MILE, data=output, 
+     xlab="USGS Estimate", ylab="Jones Estimate", 
+     ps=12, cex.lab=14/12, cex.axis=10/12)
+abline(a=0,b=1)
+
+```
+
