@@ -10,7 +10,7 @@ output:
     toc_float: yes
 ---
 
-The goal of this analysis is to delineate watersheds for points associated with the CBW-LULC project. This spript relies on both the spatial capabilities of R (Raster, sp, and RGDAL packages) in addition to the hydrologic analysis tools in [WhiteBox Tools](http://www.uoguelph.ca/~hydrogeo/WhiteboxTools/index.html) scripting software. Required dataset inlcude a [NHDplus 30-m DEM](http://www.horizon-systems.com/NHDPlus/NHDPlusV1_02.php), [the gagesII database](https://water.usgs.gov/GIS/metadata/usgswrd/XML/gagesII_Sept2011.xml), and finally, [NLCD-LULC data](https://water.usgs.gov/GIS/metadata/usgswrd/XML/gagesII_Sept2011.xml) from the USGS.
+The goal of this analysis is to delineate watersheds for points associated with the CBW-LULC project. This spript relies on both the spatial capabilities of R (Raster, sp, and RGDAL packages) in addition to the hydrologic analysis tools in [WhiteBox Tools](http://www.uoguelph.ca/~hydrogeo/WhiteboxTools/index.html) scripting software. Required dataset inlcude a [NHDplus 30-m DEM](http://www.horizon-systems.com/NHDPlus/NHDPlusV1_02.php), [the gagesII database](https://water.usgs.gov/GIS/metadata/usgswrd/XML/gagesII_Sept2011.xml), and finally, [NLCD-LULC data](https://water.usgs.gov/GIS/metadata/usgswrd/XML/gagesII_Sept2011.xml) from the USGS. All code is house at [GitHub](https://github.com/FloodHydrology/InundationHydRology)
 
 For more on wateshed delineation in WhiteBox GAT and WhiteBoxTools, [see this block post from Jon Lindsay](https://whiteboxgeospatial.wordpress.com/2014/05/04/mapping-watersheds-in-whitebox-gat/).
 
@@ -67,7 +67,7 @@ fun<-function(n){
                 dem=dem,  
                 pnts=pnts,
                 unique_id = "pnts.FieldActivityId",
-                mask=mask, 
+                mask=mask[n,], 
                 threshold=1000,
                 LULC2001=LULC2001,
                 LULC2006=LULC2006,

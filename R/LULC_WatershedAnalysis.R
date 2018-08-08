@@ -8,6 +8,8 @@ LULC_WatershedAnalysis<-function(
   LULC2001=LULC2001,
   LULC2006=LULC2006,
   LULC2011=LULC2011, 
+  scratch_dir=scratch_dir,
+  wbt_dir=wbt_dir,
   data_dir=data_dir, 
   output_dir=output_dir){
   
