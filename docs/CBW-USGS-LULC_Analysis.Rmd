@@ -22,21 +22,16 @@ Note, data is currently housed in Nate's SESYNC workspace.  He will eventually m
 rm(list=ls(all=TRUE))
 
 #Define relevant working directories
-data_dir<-"//storage.research.sesync.org/njones-data/Research Projects/LULC_CBW/"
+data_dir<-"//storage.research.sesync.org/njones-data/Research Projects/LULC_CBW/Spatial_Data/"
 scratch_dir<-"C:\\ScratchWorkspace\\"
 wbt_dir<-"C:/WBT/whitebox_tools"
 
 #Add appropriate libararies
-#install.packages(c('RSAGA', 'rgdal', 'rgeos', 'raster', 'sp', 'dplyr', 'magrittr'))
-library(RSAGA)
+library(sp)
+library(raster)
 library(rgdal)
 library(rgeos)
-library(raster)
-library(sp)
-library(sf)
 library(dplyr)
-library(magrittr)
-library('fasterize')
 
 #Download package from GIT
 library(devtools)
@@ -44,16 +39,16 @@ install_github("FloodHydrology/InundationHydRology")
 library(InundationHydRology)
 
 #Download required data
-dem<-raster(paste0(data_dir,"Spatial_Data/NHDPlus02/Elev_Unit_a/elev_cm"))
+dem<-raster(paste0(data_dir,"NHDPlus02/Elev_Unit_a/elev_cm"))
   p<-dem@crs
-gages<-readOGR(paste0(data_dir,"Spatial_Data/NHDPlus02/StreamGageEvent.shp"))
+gages<-readOGR(paste0(data_dir,"NHDPlus02/StreamGageEvent.shp"))
   gages<-gages[gages$SUBREGION %in% c("0205","0206","0207","0208"),]
   gages<-spTransform(gages, p)
-HUC08<-readOGR(paste0(data_dir,"Spatial_Data/NHDPlus02/Subbasin.shp"))
+HUC08<-readOGR(paste0(data_dir,"NHDPlus02/Subbasin.shp"))
   HUC08<-spTransform(HUC08, p)
-LULC2001<-raster(paste0(data_dir,"Spatial_Data/nlcd_2001_landcover_2011_edition_2014_10_10/nlcd_2001_landcover_2011_edition_2014_10_10/nlcd_2001_landcover_2011_edition_2014_10_10.img"))
-LULC2006<-raster(paste0(data_dir,"Spatial_Data/nlcd_2006_landcover_2011_edition_2014_10_10/nlcd_2006_landcover_2011_edition_2014_10_10.img"))
-LULC2011<-raster(paste0(data_dir,"Spatial_Data/nlcd_2011_landcover_2011_edition_2014_10_10/nlcd_2011_landcover_2011_edition_2014_10_10.img"))
+LULC2001<-raster(paste0(data_dir,"nlcd_2001_landcover_2011_edition_2014_10_10/nlcd_2001_landcover_2011_edition_2014_10_10/nlcd_2001_landcover_2011_edition_2014_10_10.img"))
+LULC2006<-raster(paste0(data_dir,"nlcd_2006_landcover_2011_edition_2014_10_10/nlcd_2006_landcover_2011_edition_2014_10_10.img"))
+LULC2011<-raster(paste0(data_dir,"nlcd_2011_landcover_2011_edition_2014_10_10/nlcd_2011_landcover_2011_edition_2014_10_10.img"))
 
 ```
 
@@ -63,20 +58,22 @@ Here we need to (1) calculate flow direction raster and (2) convert the stream i
 ```{r, message=FALSE, warning=FALSE, results='hide'}
 LULC_WatershedAnalysis<-function(
   dem=dem,  
-  pnts=pnts, 
+  pnts=pnts,
+  unique_id="SOURCE_FEA",
   streams=streams,
   mask=mask, 
   threshold=1000,
   LULC2001=LULC2001,
   LULC2006=LULC2006,
-  LULC2011=LULC2011){
+  LULC2011=LULC2011, 
+  data_dir=data_dir){
 
 #Mask dem and gages
 dem<-crop(dem, mask)
 pnts<-pnts[mask,]
 
 #Add UID to pnts
-pnts$FID<-seq(1,length(pnts))
+pnts$ID<-seq(1,length(pnts))
 
 #Export DEM and stream layer to local working directory
 writeRaster(dem, paste0(scratch_dir,"dem.tif"), overwrite=T)
@@ -132,7 +129,7 @@ system(paste(paste(wbt_dir),
              "-r=VectorPointsToRaster", 
              paste0("--wd=",scratch_dir),
              "-i='gages.shp'", 
-             "--field=FID",
+             "--field=ID",
              "-o=pp.tif",
              "--assign=min",
              "--nodata",
@@ -145,7 +142,7 @@ system(paste(paste(wbt_dir),
              "--pour_pts='pp.tif'", 
              "--streams='flowgrid.tif'",
              "-o='pp_snap.tif",
-             "--snap_dist=250"
+             "--snap_dist=1000"
              ))
 
 #Convert back to point file
@@ -158,7 +155,7 @@ fun<-function(ID){
 
   #Select Pour Point and Export
   pnt<-snappnts[snappnts$ID.pp_snap==ID,]
-  UID<-pnts$SOURCE_FEA[pnts$FID==ID]
+  pnt@proj4string<-dem@crs
   writeOGR(pnt,paste0(scratch_dir,"."),"snap", driver = "ESRI Shapefile", overwrite_layer=T)
   
   #Watershed Tool
@@ -167,10 +164,21 @@ fun<-function(ID){
                paste0("--wd=",scratch_dir),
                "--d8_pntr='fdr.tif'",
                "--pour_pts='snap.shp'", 
-               paste0("-o='watershed_",UID,".tif'")))
+               paste0("-o='watershed.tif'")))
 
   #Import watershed raster into R environment
-  ws_grid<-raster(paste0(scratch_dir,"watershed_",UID,".tif"), overwrite=T)
+  ws_grid<-raster(paste0(scratch_dir,"watershed.tif"), overwrite=T)
+  
+  #Write copy of raster to data directory
+  if(!dir.exists(paste0(data_dir,"watershed"))){
+    dir.create(paste0(data_dir,"watershed"))
+  }
+  writeRaster(ws_grid, 
+              paste0(data_dir,
+                     "watershed/watershed_",
+                     pnts@data[pnts$ID==ID,paste(unique_id)], 
+                     ".tif"), 
+              overwrite=T)
   
   #Lmit LULC grids to watershed
   LULC2001<-LULC2001*ws_grid
@@ -230,7 +238,7 @@ output<-do.call(rbind, output)
 
 #merge output
 pnts<-pnts@data
-pnts<-merge(pnts, output, by.x="FID", by.y="ID")
+pnts<-merge(pnts, output, by.x="ID", by.y="ID")
 
 #Export output
 pnts
@@ -271,10 +279,57 @@ output<-bind_rows(x)
 output<-output[output$DA_SQ_MILE>0,]
 output<-output[output$DA_SQ_MILE<2000,]
 output$ws_area<-output$ws_area/(1000^2)/(1.60934^2)
+
+#plot
+par(mar=c(4,4,1,1))
 plot(ws_area~DA_SQ_MILE, data=output, 
-     xlab="USGS Estimate", ylab="Jones Estimate", 
+     log="xy", xlim=c(0.75,2000), ylim=c(0.75,2000), 
+     pch=19, col="grey30", cex=0.5,
+     xlab="USGS Estimate [mi^2]", ylab="Jones Estimate [mi^2]", 
      ps=12, cex.lab=14/12, cex.axis=10/12)
-abline(a=0,b=1)
+abline(a=0,b=1, lwd=2, lty=2, col="dark red")
+
+
+#Save Image
+save.image("backup.R")
+
+```
+
+
+Okay, so it sorta works. We're biased to "low" estimates where we don't adequately snap to the nearest pour point.  We will manuall check for this. 
+
+
+Now onto the show
+
+```{r}
+#Define pnts
+pnts<-read.csv(paste0(data_dir,"input.csv"))
+pnts<-SpatialPointsDataFrame(pnts[,c("Longitude","Latitude")], data = data.frame(pnts$FieldActivityId))
+pnts@proj4string<-CRS("+proj=longlat +ellps=GRS80 +datum=NAD83 +no_defs")
+pnts<-spTransform(pnts, dem@crs)
+
+#Select Subbasin
+mask<-HUC08
+mask<-mask[pnts,]
+
+fun<-function(n){
+  tryCatch(LULC_WatershedAnalysis(  
+              dem=dem,  
+              pnts=pnts, 
+              mask=mask[n,], 
+              threshold=1000,
+              LULC2001=LULC2001,
+              LULC2006=LULC2006,
+              LULC2011=LULC2011), 
+           error=function(e) c(n, rep(0,24)))}
+
+#Run function
+x<-lapply(seq(1,length(mask)), fun)
+
+#pull together data
+#output<-bind_rows(x)
+#
+save.image("initial_output.R")
 
 ```
 
