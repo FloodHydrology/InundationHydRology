@@ -1,0 +1,87 @@
+---
+title: "Chesapeake Bay Watershed and LULC Analysis"
+output:
+  html_notebook:
+    toc: yes
+    toc_float: yes
+  html_document:
+    df_print: paged
+    toc: yes
+    toc_float: yes
+---
+
+The goal of this analysis is to delineate watersheds for points associated with the CBW-LULC project. This spript relies on both the spatial capabilities of R (Raster, sp, and RGDAL packages) in addition to the hydrologic analysis tools in [WhiteBox Tools](http://www.uoguelph.ca/~hydrogeo/WhiteboxTools/index.html) scripting software. Required dataset inlcude a [NHDplus 30-m DEM](http://www.horizon-systems.com/NHDPlus/NHDPlusV1_02.php), [the gagesII database](https://water.usgs.gov/GIS/metadata/usgswrd/XML/gagesII_Sept2011.xml), and finally, [NLCD-LULC data](https://water.usgs.gov/GIS/metadata/usgswrd/XML/gagesII_Sept2011.xml) from the USGS.
+
+For more on wateshed delineation in WhiteBox GAT and WhiteBoxTools, [see this block post from Jon Lindsay](https://whiteboxgeospatial.wordpress.com/2014/05/04/mapping-watersheds-in-whitebox-gat/).
+
+#Step 1: Data Organization
+Note, data is currently housed in Nate's SESYNC workspace.  He will eventually migrate this to the Palmer Lab folder. 
+
+```{r, message=FALSE, warning=FALSE, results='hide'}
+#Clear Memory
+rm(list=ls(all=TRUE))
+
+#Define relevant working directories
+data_dir<-"//storage.research.sesync.org/njones-data/Research Projects/LULC_CBW/Spatial_Data/"
+scratch_dir<-"C:\\ScratchWorkspace\\"
+wbt_dir<-"C:/WBT/whitebox_tools"
+
+#Add appropriate libararies
+library(sp)
+library(raster)
+library(rgdal)
+library(rgeos)
+library(dplyr)
+library(devtools)
+
+#Download package from GIT
+install_github("FloodHydrology/InundationHydRology")
+library(InundationHydRology)
+
+#Download required data
+dem<-raster(paste0(data_dir,"NHDPlus02/Elev_Unit_a/elev_cm"))
+  p<-dem@crs
+HUC08<-readOGR(paste0(data_dir,"NHDPlus02/Subbasin.shp"))
+  HUC08<-spTransform(HUC08, p)
+LULC2001<-raster(paste0(data_dir,"nlcd_2001_landcover_2011_edition_2014_10_10/nlcd_2001_landcover_2011_edition_2014_10_10/nlcd_2001_landcover_2011_edition_2014_10_10.img"))
+LULC2006<-raster(paste0(data_dir,"nlcd_2006_landcover_2011_edition_2014_10_10/nlcd_2006_landcover_2011_edition_2014_10_10.img"))
+LULC2011<-raster(paste0(data_dir,"nlcd_2011_landcover_2011_edition_2014_10_10/nlcd_2011_landcover_2011_edition_2014_10_10.img"))
+
+```
+
+Step 2: Delineate watershed using the LULC_WatershedAnalysis r_script in the InundationHydRology package. 
+
+```{r}
+#Define pnts
+pnts<-read.csv(paste0(data_dir,"input.csv"))
+pnts<-SpatialPointsDataFrame(pnts[,c("Longitude","Latitude")], data = data.frame(pnts$FieldActivityId))
+pnts@proj4string<-CRS("+proj=longlat +ellps=GRS80 +datum=NAD83 +no_defs")
+pnts<-spTransform(pnts, dem@crs)
+
+#Select Subbasin
+mask<-HUC08
+mask<-mask[pnts,]
+
+fun<-function(n){
+  tryCatch(LULC_WatershedAnalysis(  
+                dem=dem,  
+                pnts=pnts,
+                unique_id = "pnts.FieldActivityId",
+                mask=mask, 
+                threshold=1000,
+                LULC2001=LULC2001,
+                LULC2006=LULC2006,
+                LULC2011=LULC2011, 
+                data_dir = data_dir, 
+                output_dir = paste0(data_dir,"watershed/")), 
+           error=function(e) c(n, rep(0,24)))}
+
+#Run function
+x<-lapply(seq(1,length(mask)), fun)
+
+#pull together data
+output<-bind_rows(x)
+save.image("initial_output.R")
+
+```
+
