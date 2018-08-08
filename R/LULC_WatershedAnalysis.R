@@ -8,7 +8,8 @@ LULC_WatershedAnalysis<-function(
   LULC2001=LULC2001,
   LULC2006=LULC2006,
   LULC2011=LULC2011, 
-  data_dir=data_dir){
+  data_dir=data_dir, 
+  output_dir=output_dir){
   
   #Mask dem and gages
   dem<-crop(dem, mask)
@@ -116,8 +117,7 @@ LULC_WatershedAnalysis<-function(
       dir.create(paste0(data_dir,"watershed"))
     }
     writeRaster(ws_grid, 
-                paste0(data_dir,
-                       "watershed/watershed_",
+                paste0(output_dir,
                        pnts@data[pnts$ID==ID,paste(unique_id)], 
                        ".tif"), 
                 overwrite=T)
