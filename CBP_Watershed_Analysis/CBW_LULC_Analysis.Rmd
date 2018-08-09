@@ -85,3 +85,5 @@ save.image("initial_output.R")
 
 ```
 
+So, I've encourntered problems at i=23. I'm not sure why.  Next step will be to investigate this. 
+
