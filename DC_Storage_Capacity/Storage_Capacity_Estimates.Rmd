@@ -1,0 +1,198 @@
+---
+title: "Storage Capacity Estimate 1.0"
+output:
+  html_document:
+    df_print: paged
+    toc: yes
+    toc_float: yes
+  html_notebook:
+    toc: yes
+    toc_float: yes
+---
+
+To-do: Work in unique id into the system....
+
+
+The goal of this analysis is to estimate contemporary storage capacity for the Palmer Lab study sites on the Eastern Shore. This is an intitial analysis, and it will likley evolve over time.  
+
+A few quick notes on data:
+
+1) All data is housed in the Palmer Lab subdirectory.  (Choptank/Nate/Storage_Capacity)
+
+2) The 1m DEM was downloaded from [imap.maryland.gov](http://imap.maryland.gov/Pages/lidar-dem-download-files.aspx)
+
+3) Wetland polygons were digitized by hand and were only meant to be a rough estimate of wetland coverage.  A more detailed analysis [that incoporates surveyed cross sections] will be conducted at a later date.  
+
+4) This script will be housed at [floodhydrology.com](http://floodhydrology.com/InundationHydRology/Storage_Capacity_Estimates.html)
+
+#Step 1: Workspace Organization
+As always, the first step is to define relevant directories, aquire required librairies, and download input data. Note, this anlaysis requires a DEM, wetland location, and wetland polygon, all of which can be found in the "Storage_Capacity" subdirectory on the Palmer Lab server. Further, the script also requires the user to specify the location of the "storage capacity" data directory, a scratch workspsace, and location of the [Whitebox Tools](http://www.uoguelph.ca/~hydrogeo/WhiteboxTools/index.html) executable. For SESYNC users, note that Whitebox cannot be initiated from the RStudio Server, and you will need to use the WynAnalytics virtual machine.
+
+```{r, message=FALSE, warning=FALSE, results='hide'}
+#Clear memory (KH says not to do this...maybe I'll convert eventually)
+rm(list=ls(all=TRUE))
+
+#Defin relevant working directories
+data_dir<-"//storage.research.sesync.org/palmer-group-data/choptank/Nate/Storage_Capacity/"
+scratch_dir<-"C:\\ScratchWorkspace\\"
+wbt_dir<-"C:/WBT/whitebox_tools"
+
+#Download packages 
+library(raster)
+library(sp)
+library(rgdal)
+library(rgeos)
+library(dplyr)
+library(devtools)
+
+#Download package from GIT
+install_github("FloodHydrology/InundationHydRology")
+library(InundationHydRology)
+
+#Download relevant data 
+dem_jl<-raster(paste0(data_dir,"II_work/jl_dem"))
+dem_jr<-raster(paste0(data_dir,"II_work/jr_dem"))
+pnts<-readOGR(paste0(data_dir,"II_Work/."),"Wetland_Locations", verbose = F)
+burn<-readOGR(paste0(data_dir,"II_Work/."),"wetland_burn")
+
+#Add Unique ID to points
+pnts$WetID<-seq(1,length(pnts))
+burn$WetID<-sp::over(burn, pnts)$WetID
+
+```
+
+#Step 2: Burn wetlands into DEM 
+
+Burn wetlands into dem using the GIW_burn function. Note, here we are literally burning in a single elevation. [The wetland will look like a cylinder!!!]  Eventually, we'll want to incorporate the surveyed cross sections to represent more complicated geometry.
+
+```{r}
+#Process Jackson Ln property
+mask_jl<-extent(dem_jl)
+burn_jl<-crop(burn, mask_jl)
+dem_burn_jl<-GIW_burn(dem_jl, burn_jl[1,])
+for(i in 2:length(burn_jl)){
+  dem_burn_jl<-GIW_burn(dem_burn_jl, burn_jl[i,])
+}
+
+#Process Jones Rd property
+mask_jr<-extent(dem_jr)
+burn_jr<-crop(burn, mask_jr)
+dem_burn_jr<-GIW_burn(dem_jr, burn_jr[1,])
+for(i in 2:length(burn_jr)){
+  dem_burn_jr<-GIW_burn(dem_burn_jr, burn_jr[i,])
+}
+
+```
+
+
+Here are a few examples of what the burned DEMs look like :) 
+
+```{r, echo=F}
+par(mar=c(0,0,0,0))
+par(mfrow=c(3,2))
+for(i in 1:6){
+  plot(burn_jr[i,])
+  plot(crop(dem_burn_jr,burn_jr[i,]) , add=T)
+}
+```
+
+#Step 3: Delineate wetland depressions and their subsheds
+
+Here, we use WhiteBox GAT tools to identify depressions in the DEM, then we will delineate individual subsheds from those depressions. 
+
+##3.1 Wetland Depression Identification
+```{r, message=FALSE, warning=FALSE, results='hide'}
+#Identify depressions in DEM
+giws_jl<-GIW_identification(
+            dem=dem_burn_jl,                    #DEM in question
+            min_size=100,                       #Minimum depression size (in map units)
+            workspace="C:\\ScratchWorkspace\\", #Scratch Workspace
+            wbt_path="C:/WBT/whitebox_tools")   #WBG toolbox location
+
+giws_jr<-GIW_identification(
+            dem=dem_burn_jr,                    #DEM in question
+            min_size=100,                       #Minimum depression size (in map units)
+            workspace="C:\\ScratchWorkspace\\", #Scratch Workspace
+            wbt_path="C:/WBT/whitebox_tools")   #WBG toolbox location
+```
+Below are the identified depressions for the Jackson Lane property. 
+```{r, echo=F}
+par(mar=c(0,0,0,0))
+plot(giws_jl)
+```
+
+##3.2 Wetland Subshed Delineation
+```{r, message=FALSE, warning=FALSE, results='hide'}
+#Create rapper function for subshed delineation
+fun<-function(WetID){
+  #Define point of interest
+  pnt<-pnts[pnts$WetID==WetID,]
+  
+  #Define dem and depressions of interest
+  if(gIntersects(pnt, burn_jr)==T){
+    dem=dem_burn_jr
+    depressions=giws_jr
+  }else{
+    dem=dem_burn_jl
+    depressions=giws_jl
+  }
+  
+  #Execute subshed delineation function
+  subshed<-GIW_subshed_delineation(
+    dem = dem,
+    depressions=depressions,
+    wetland=pnt)
+  
+  #Assign sushed shape to global env
+  assign(paste0("subshed_",pnt$WetID), subshed, envir = .GlobalEnv)
+}
+  
+#Run function
+lapply(seq(1,20), fun)
+  
+```
+
+#Step 4: Calculate Storage Capacity
+Using method from [Jones et al., 2018](https://doi.org/10.1002/hyp.11405), we estimate contemporary storage capacity for each wetland. 
+
+
+```{r, message=FALSE, warning=FALSE, results='hide'}
+#Devleop stage storage relationship
+storage<-GIW_stage_storage(
+        subshed = subshed, #Subshed delineated in previous step
+        dem = dem_burn,    #DEM
+        z_max = 1,         #Maximum inundation depth
+        dz = 1/12)          #Inundation Interval
+
+#Print max inundation extent
+inundation<-GIW_max_inundation(
+  subshed,  #wateshed raster
+  dem_burn, #DEM for the analysis
+  storage   #Storage Curve 
+  )
+
+```
+
+
+#Step 3: Initial Results!!!
+```{r, echo=FALSE}
+e<-extent(c(1668452,1669133,507159.1,507768.5))
+dem_crop<-crop(dem_burn, e)
+subshed<-rasterToPolygons(subshed, dissolve = T)
+
+plot(dem_crop, main = "Dark Bay")
+plot(subshed,add=T)
+plot(inundation, add=T, col=topo.colors(1), legend=F)
+```
+
+```{r, echo=F}
+par(mar=c(3,5,1,1))
+plot(volume~z, data=storage,  
+     xlab="Relative Depth [ft]", 
+     ylab=expression("Volume [ft"^3*"]"), 
+     ps=12, cex.axis=10/12, cex.lab=14/12, pch=19)
+z<-min(storage$z[storage$outflow_length!=0])
+abline(v=z, lty=2, lwd=2, col="grey30")
+
+```
+

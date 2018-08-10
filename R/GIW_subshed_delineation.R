@@ -1,8 +1,8 @@
 GIW_subshed_delineation<-function(
   workspace="C:\\ScratchWorkspace\\",
   wbt_path="C:/WBT/whitebox_tools",
-  dem,
-  depressions,
+  dem=dem,
+  depressions=depressions,
   wetland){
   
   #Set Working Directory
@@ -83,23 +83,34 @@ GIW_subshed_delineation<-function(
   fdr<-fac*watershed
   depressions<-depressions*watershed
   
-  #If there are other basins complete the analysis again to remove
+  #Remove depression of interest
   depressions[depressions==raster::extract(depressions, wetland)]<-NA
+  
+  #Count number of depression
   n_depression<-length(unique(depressions@data@values))-1
-  while(n_depression>0){
-    #Extract depression of interest
-    wetland_dep<-depressions
-    wetland_dep[wetland_dep!=unique(wetland_dep@data@values)[1]]<-NA
-    wetland_dep<-wetland_dep*0+1
+  
+  #If there are remaining depressions, remove their watershed
+  if(n_depression>0){
+    #subset fac to reamining depressions
+    fac<-fac*depressions
+
+    #Identify boundaries
+    r<-fac*0+1
+    r[is.na(r)]<-0
+    r<-focal(r, matrix(c(rep(1,4),0, rep(1,4)), nrow=3, ncol=3))
+    r[r==8 | r==0]<-NA
+    r<-data.frame(rasterToPoints(r))
+    r$fac<-raster::extract(fac,SpatialPoints(r[,1:2]))
+    r$wet<-raster::extract(depressions,SpatialPoints(r[,1:2]))
     
-    #Define watershed pour point (max fac in depression)  
-    wetland_fac<-wetland_dep*fac
-    max_wetland_fac<-cellStats(wetland_fac, max)
-    pp<-rasterToPoints(wetland_fac, fun=function(x){x==max_wetland_fac})
-    pp<-matrix(pp[1,], ncol=3)
-    pp<-SpatialPointsDataFrame(pp, data.frame(x=1))
-    pp@proj4string<-dem@crs
-    writeOGR(pp,paste0(workspace,"."),"pp", drive="ESRI Shapefile", overwrite=T)
+    #Create pour points for highest fac at each boundary
+    r<-na.omit(r)
+    r<- r %>% group_by(wet) %>% filter(fac==max(fac))
+    r<- SpatialPointsDataFrame(r[,1:2], data.frame(dep=r$wet))
+    r@proj4string<-dem@crs
+    
+    #Export pout points
+    writeOGR(r,paste0(workspace,"."),"pp", drive="ESRI Shapefile", overwrite=T)
     
     #Watershed Delineation
     system(paste(paste(wbt_path), 
@@ -111,13 +122,10 @@ GIW_subshed_delineation<-function(
     subshed<-raster(paste0(workspace,"subshed.tif"))
     
     #Remove subshed from watershed
+    subshed<-subshed*0+1
     subshed[is.na(subshed)]<-0
     watershed<-watershed-subshed
     watershed[watershed!=1]<-NA
-    
-    #Recalculate nubmer of depressions
-    depressions<-depressions*watershed
-    n_depression<-length(unique(depressions@data@values))-1
   }
   
   #Export Watershed
