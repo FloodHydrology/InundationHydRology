@@ -1,17 +1,14 @@
 ---
 title: "Storage Capacity Estimate 1.0"
 output:
+  html_notebook:
+    toc: yes
+    toc_float: yes
   html_document:
     df_print: paged
     toc: yes
     toc_float: yes
-  html_notebook:
-    toc: yes
-    toc_float: yes
 ---
-
-To-do: Work in unique id into the system....
-
 
 The goal of this analysis is to estimate contemporary storage capacity for the Palmer Lab study sites on the Eastern Shore. This is an intitial analysis, and it will likley evolve over time.  
 
@@ -27,7 +24,6 @@ A few quick notes on data:
 
 #Step 1: Workspace Organization
 As always, the first step is to define relevant directories, aquire required librairies, and download input data. Note, this anlaysis requires a DEM, wetland location, and wetland polygon, all of which can be found in the "Storage_Capacity" subdirectory on the Palmer Lab server. Further, the script also requires the user to specify the location of the "storage capacity" data directory, a scratch workspsace, and location of the [Whitebox Tools](http://www.uoguelph.ca/~hydrogeo/WhiteboxTools/index.html) executable. For SESYNC users, note that Whitebox cannot be initiated from the RStudio Server, and you will need to use the WynAnalytics virtual machine.
-
 ```{r, message=FALSE, warning=FALSE, results='hide'}
 #Clear memory (KH says not to do this...maybe I'll convert eventually)
 rm(list=ls(all=TRUE))
@@ -43,6 +39,7 @@ library(sp)
 library(rgdal)
 library(rgeos)
 library(dplyr)
+library(parallel)
 library(devtools)
 
 #Download package from GIT
@@ -61,10 +58,8 @@ burn$WetID<-sp::over(burn, pnts)$WetID
 
 ```
 
-#Step 2: Burn wetlands into DEM 
-
+#Step 2: Burn Wetlands into DEM 
 Burn wetlands into dem using the GIW_burn function. Note, here we are literally burning in a single elevation. [The wetland will look like a cylinder!!!]  Eventually, we'll want to incorporate the surveyed cross sections to represent more complicated geometry.
-
 ```{r}
 #Process Jackson Ln property
 mask_jl<-extent(dem_jl)
@@ -81,12 +76,8 @@ dem_burn_jr<-GIW_burn(dem_jr, burn_jr[1,])
 for(i in 2:length(burn_jr)){
   dem_burn_jr<-GIW_burn(dem_burn_jr, burn_jr[i,])
 }
-
 ```
-
-
 Here are a few examples of what the burned DEMs look like :) 
-
 ```{r, echo=F}
 par(mar=c(0,0,0,0))
 par(mfrow=c(3,2))
@@ -96,9 +87,9 @@ for(i in 1:6){
 }
 ```
 
-#Step 3: Delineate wetland depressions and their subsheds
+#Step 3: Delineate Wetlands
 
-Here, we use WhiteBox GAT tools to identify depressions in the DEM, then we will delineate individual subsheds from those depressions. 
+Here, we use WhiteBox Tools to identify depressions in the DEM, then we will delineate individual subsheds from those depressions. 
 
 ##3.1 Wetland Depression Identification
 ```{r, message=FALSE, warning=FALSE, results='hide'}
@@ -143,8 +134,8 @@ fun<-function(WetID){
     depressions=depressions,
     wetland=pnt)
   
-  #Assign sushed shape to global env
-  assign(paste0("subshed_",pnt$WetID), subshed, envir = .GlobalEnv)
+  #Write raster to folder
+  writeRaster(subshed, paste0(data_dir, "II_work/subshed_",pnt$WetID,".asc"))
 }
   
 #Run function
@@ -155,27 +146,81 @@ lapply(seq(1,20), fun)
 #Step 4: Calculate Storage Capacity
 Using method from [Jones et al., 2018](https://doi.org/10.1002/hyp.11405), we estimate contemporary storage capacity for each wetland. 
 
+##4.1 Stage Storage Relationship
+Create function to complete the storage capacity estimate below. Base it on the old dem, but include below surface inundation from PPR paper. then, print out each basin with inundation.
 
 ```{r, message=FALSE, warning=FALSE, results='hide'}
-#Devleop stage storage relationship
-storage<-GIW_stage_storage(
-        subshed = subshed, #Subshed delineated in previous step
-        dem = dem_burn,    #DEM
-        z_max = 1,         #Maximum inundation depth
-        dz = 1/12)          #Inundation Interval
+#Create rapper function for subshed delineation
+fun<-function(WetID){
+  #Define point of interest
+  pnt<-pnts[pnts$WetID==WetID,]
+  
+  #Define dem and depressions of interest
+  if(gIntersects(pnt, burn_jr)==T){
+    dem=dem_jr
+  }else{
+    dem=dem_jl
+  }
+  
+  #Define subshed 
+  subshed<-raster(paste0(data_dir, "II_work/subshed_",WetID,".asc"))
+  
+  #Devleop stage storage relationship
+  storage<-GIW_stage_storage(
+          subshed = subshed, #Subshed delineated in previous step
+          dem = dem,         #DEM
+          z_max = 1,         #Maximum inundation depth
+          dz = 1/12)         #Inundation Interval
+  
+  #Export
+  storage$WetID<-WetID
+  storage
+}
+
+#Run function
+t0<-Sys.time()
+cl <- makePSOCKcluster(detectCores()) #Create Clusters
+clusterEvalQ(cl, library(raster))   
+clusterEvalQ(cl, library(rgeos))
+clusterExport(cl, c('pnts','burn_jr','dem_jr',"dem_jl", "data_dir",'GIW_stage_storage'), env=.GlobalEnv)  #Send Clusters function with the execute function
+x<-parLapply(cl, seq(1,20), fun) #Run execute Function
+stopCluster(cl)  #Turn clusters off
+tf<-Sys.time()
+tf-t0
+
+#unlist output
+storage<-do.call(rbind,x)
+```
+
+#4.2 Spill point
+Here, we estimate the spill point for each wetland.  
+
+
+```{r, echo=FALSE}
+#for testing 
+storage<-storage[storage$WetID==14,]
+
+
+
+
 
 #Print max inundation extent
 inundation<-GIW_max_inundation(
   subshed,  #wateshed raster
-  dem_burn, #DEM for the analysis
+  dem, #DEM for the analysis
   storage   #Storage Curve 
   )
 
-```
 
 
-#Step 3: Initial Results!!!
-```{r, echo=FALSE}
+
+
+
+
+
+
+
+
 e<-extent(c(1668452,1669133,507159.1,507768.5))
 dem_crop<-crop(dem_burn, e)
 subshed<-rasterToPolygons(subshed, dissolve = T)

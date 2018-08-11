@@ -13,6 +13,10 @@ GIW_stage_storage<-function(
   temp_min<-temp*0+minValue(temp)
   temp_min@crs<-dem@crs
   
+  #Create minimum point
+  pnt_min<-cellStats(temp, min)
+  pnt_min<-rasterToPoints(temp,spatial=T, fun=function(x) x ==pnt_min)
+
   #Create function to return conditional raster
   Con<-function(condition, trueValue, falseValue){
     return(condition * trueValue + (!condition)*falseValue)
@@ -21,8 +25,14 @@ GIW_stage_storage<-function(
   #Create function to calcluate inundation area, volume, and spill boundary length
   inundate<-function(z){
     
-    #Create metrics to estimate area, volume, and spill boundary length
+    #define inundated area [area connected to pnt_min]
     area<-Con(temp>(temp_min+z),0,1)
+    area<-clump(area)
+    group<-raster::extract(x=area, y=pnt_min)
+    area[area!=group]<-0
+    area[area==group]<-1
+    
+    #Create metrics to estimate area, volume, and spill boundary length
     volume<-(((z+temp)-temp_min)*area)*res(area)[1]*res(area)[2]
     outflow<-cellStats(area*boundaries(temp_min, type="inner"), 'sum')
     
