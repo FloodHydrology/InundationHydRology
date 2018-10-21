@@ -23,8 +23,8 @@ rm(list=ls(all=TRUE))
 
 #Define relevant working directories
 data_dir<-"//storage.research.sesync.org/njones-data/Research Projects/LULC_CBW/Spatial_Data/"
-scratch_dir<-"C:\\ScratchWorkspace\\"
-wbt_dir<-"C:/WBT/whitebox_tools"
+scratch_dir<-"C:\\ScratchWorkspace/"
+wbt_dir<-"C:\\WBT/whitebox_tools"
 
 #Add appropriate libararies
 library(sf)
@@ -43,10 +43,6 @@ dem<-raster(paste0(data_dir,"NHDPlus02/Elev_Unit_a/elev_cm"))
   p<-dem@crs
 HUC08<-st_read(paste0(data_dir,"NHDPlus02/Subbasin.shp"))
   HUC08<-st_transform(HUC08, crs=paste(p))
-LULC2001<-raster(paste0(data_dir,"nlcd_2001_landcover_2011_edition_2014_10_10/nlcd_2001_landcover_2011_edition_2014_10_10/nlcd_2001_landcover_2011_edition_2014_10_10.img"))
-LULC2006<-raster(paste0(data_dir,"nlcd_2006_landcover_2011_edition_2014_10_10/nlcd_2006_landcover_2011_edition_2014_10_10.img"))
-LULC2011<-raster(paste0(data_dir,"nlcd_2011_landcover_2011_edition_2014_10_10/nlcd_2011_landcover_2011_edition_2014_10_10.img"))
-
 ```
 
 Step 2: Delineate watershed using the LULC_WatershedAnalysis r_script in the InundationHydRology package. 
@@ -63,31 +59,21 @@ pnts<-st_transform(pnts, paste(dem@crs))
 mask<-HUC08
 mask<-mask[pnts,]
 
-#For testing
-mask<-mask[1,]
-pnts<-st_intersection(pnts, mask)
-
 fun<-function(n){
-  tryCatch(LULC_WatershedAnalysis(  
+  tryCatch(WatershedAnalysis(  
                 dem=dem,  
                 pnts=pnts,
-                unique_id = "pnts.FieldActivityId",
+                unique_id = "FldActI",
                 mask=mask[n,], 
-                threshold=1000,
-                LULC2001=LULC2001,
-                LULC2006=LULC2006,
-                LULC2011=LULC2011, 
-                data_dir = data_dir, 
+                threshold=300,
+                scratch_dir=scratch_dir,
+                data_dir = data_dir,
+                wbt_dir = wbt_dir,
                 output_dir = paste0(data_dir,"watershed/")), 
            error=function(e) c(n, rep(0,24)))}
 
 #Run function
-x<-lapply(seq(1,length(mask)), fun)
-
-#pull together data
-output<-bind_rows(x)
-save.image("initial_output.R")
-
+lapply(seq(1,length(mask)), fun)
 ```
 
 So, I've encourntered problems at i=23. I'm not sure why.  Next step will be to investigate this. 

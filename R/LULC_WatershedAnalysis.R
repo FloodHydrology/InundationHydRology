@@ -14,38 +14,37 @@ LULC_WatershedAnalysis<-function(
   output_dir=output_dir){
   
   #Mask dem and gages
-  dem<-crop(dem, mask)
+  dem<-crop(dem, as.vector(st_bbox(mask))[c(1, 3, 2, 4)])
   pnts<-pnts[mask,]
   
-  #Add UID to pnts
-  pnts$ID<-seq(1,length(pnts))
-  
   #Export DEM and stream layer to local working directory
-  writeRaster(dem, paste0(scratch_dir,"dem.tif"), overwrite=T)
-  writeOGR(pnts,paste0(scratch_dir,"."),"gages", driver = "ESRI Shapefile", overwrite_layer = T)
-  
-  #Fill "single cell" depressions
-  system(paste(paste(wbt_dir),
-               "-r=FillSingleCellPits",
-               paste0("--wd=",scratch_dir),
-               "--dem='dem.tif'",
-               "-o='dem_breach_minor.tif'"))
-  
+  writeRaster(dem, 
+              paste0(scratch_dir,"dem.tif"), 
+              overwrite=T)
+  st_write(pnts, paste0(scratch_dir,"pnts.shp"), delete_layer = T)
+           
   #Gaussian Filter
   system(paste(paste(wbt_dir), 
                "-r=GaussianFilter", 
                paste0("--wd=",scratch_dir),
-               "-i='dem_breach_minor.tif'", 
+               "-i='dem.tif'", 
                "-o='dem_filter.tif'",
                "--sigma=3"))
+  
+  #Fill "single cell" depressions
+  system(paste(paste(wbt_dir),
+                "-r=FillSingleCellPits",
+                paste0("--wd=",scratch_dir),
+                "--dem='dem_filter.tif'",
+                "-o='dem_breach_minor.tif'"))
   
   #Breach larger depressions
   system(paste(paste(wbt_dir), 
                "-r=BreachDepressions", 
                paste0("--wd=",scratch_dir),
-               "--dem='dem_filter.tif'", 
+               "--dem='dem_breach_minor.tif'", 
                "-o='dem_breach_major.tif'"))
-  
+
   #Create Flow Accumulation Raster
   system(paste(paste(wbt_dir), 
                "-r=D8FlowAccumulation", 
@@ -73,8 +72,8 @@ LULC_WatershedAnalysis<-function(
   system(paste(paste(wbt_dir), 
                "-r=VectorPointsToRaster", 
                paste0("--wd=",scratch_dir),
-               "-i='gages.shp'", 
-               "--field=ID",
+               "-i='pnts.shp'", 
+               "--field=FidActl",
                "-o=pp.tif",
                "--assign=min",
                "--nodata",
@@ -92,16 +91,16 @@ LULC_WatershedAnalysis<-function(
   
   #Convert back to point file
   snapgrid<-raster(paste0(scratch_dir,"pp_snap.tif"))
-  snappnts<-rasterToPoints(snapgrid, fun=function(x){x>0})
-  snappnts<-SpatialPointsDataFrame(snappnts[,1:2], data.frame(ID=snappnts))
-  
+  snappnts<-data.frame(rasterToPoints(snapgrid, fun=function(x){x>0}))
+  snappnts<-st_as_sf(snappnts, 
+              coords=c("x","y"), 
+              crs=paste(dem@crs))
   #Create function to delineate watershed and tabulate LULC
   fun<-function(ID){
     
     #Select Pour Point and Export
-    pnt<-snappnts[snappnts$ID.pp_snap==ID,]
-    pnt@proj4string<-dem@crs
-    writeOGR(pnt,paste0(scratch_dir,"."),"snap", driver = "ESRI Shapefile", overwrite_layer=T)
+    pnt<-snappnts[snappnts$pp_snap==ID,]
+    st_write(pnt, paste0(scratch_dir,"snap.shp"), delete_layer = T)
     
     #Watershed Tool
     system(paste(paste(wbt_dir), 
@@ -120,7 +119,7 @@ LULC_WatershedAnalysis<-function(
     }
     writeRaster(ws_grid, 
                 paste0(output_dir,
-                       pnts@data[pnts$ID==ID,paste(unique_id)], 
+                       ID, 
                        ".tif"), 
                 overwrite=T)
     
@@ -177,11 +176,10 @@ LULC_WatershedAnalysis<-function(
   }
   
   #Run function
-  output<-lapply(X = snappnts$ID.pp_snap, FUN = fun)
+  output<-lapply(X = snappnts$pp_snap, FUN = fun)
   output<-do.call(rbind, output)
   
   #merge output
-  pnts<-pnts@data
   pnts<-merge(pnts, output, by.x="ID", by.y="ID")
   
   #Export output
