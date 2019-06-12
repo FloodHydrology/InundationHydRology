@@ -43,29 +43,32 @@ dem<-raster(paste0(data_dir,"NHDPlus02/Elev_Unit_a/elev_cm"))
   p<-dem@crs
 HUC08<-st_read(paste0(data_dir,"NHDPlus02/Subbasin.shp"))
   HUC08<-st_transform(HUC08, crs=paste(p))
+  
 ```
 
-Step 2: Delineate watershed using the LULC_WatershedAnalysis r_script in the InundationHydRology package. 
+Step 2: Delineate watershed using the WatershedAnalysis r_script in the InundationHydRology package. 
 
-```{r}
+```{r CPB Analysis}
 #Define pnts
-pnts<-read.csv(paste0(data_dir,"input.csv"))
+pnts<-read.csv(paste0(data_dir,"input_CPB.csv"))
 pnts<-st_as_sf(pnts, 
                coords=c("Longitude","Latitude"), 
                crs="+proj=longlat +ellps=GRS80 +datum=NAD83 +no_defs")
-pnts<-st_transform(pnts, paste(dem@crs))
+pnts<-st_transform(pnts, paste(p))
 
 #Select Subbasin
 mask<-HUC08
 mask<-mask[pnts,]
 
+#Create wrapper function
 fun<-function(n){
   tryCatch(WatershedAnalysis(  
                 dem=dem,  
                 pnts=pnts,
-                unique_id = "FldActI",
+                unique_id = "CBW_ID",
                 mask=mask[n,], 
-                threshold=300,
+                threshold=111,
+                snap_dist=300,
                 scratch_dir=scratch_dir,
                 data_dir = data_dir,
                 wbt_dir = wbt_dir,
@@ -73,8 +76,38 @@ fun<-function(n){
            error=function(e) c(n, rep(0,24)))}
 
 #Run function
-lapply(seq(1,length(mask)), fun)
+lapply(seq(1,length(mask$OBJECTID)), fun)
 ```
 
-So, I've encourntered problems at i=23. I'm not sure why.  Next step will be to investigate this. 
+```{r CPB Analysis}
+#Define pnts
+pnts<-read.csv(paste0(data_dir,"input_MBSS.csv"))
+pnts$Longitude83<-pnts$Longitude83*-1
+pnts<-st_as_sf(pnts, 
+               coords=c("Longitude83", "Latitude83"), 
+               crs="+proj=longlat +ellps=GRS80 +datum=NAD83 +no_defs")
+pnts<-st_transform(pnts, paste(p))
+
+#Select Subbasin
+mask<-HUC08
+mask<-mask[pnts,]
+
+#Create wrapper function
+fun<-function(n){
+  tryCatch(WatershedAnalysis(  
+                dem=dem,  
+                pnts=pnts,
+                unique_id = "CBW_ID",
+                mask=mask[n,], 
+                threshold=111,
+                snap_dist=300,
+                scratch_dir=scratch_dir,
+                data_dir = data_dir,
+                wbt_dir = wbt_dir,
+                output_dir = paste0(data_dir,"watershed/")), 
+           error=function(e) c(n, rep(0,24)))}
+
+#Run function
+lapply(seq(1,length(mask$OBJECTID)), fun)
+```
 

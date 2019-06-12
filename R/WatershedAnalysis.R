@@ -4,9 +4,10 @@ WatershedAnalysis<-function(
   unique_id="FldActI",
   streams=streams,
   mask=mask, 
-  threshold=300,
-  scratch_dir=scratch_dir,
+  threshold=111,
+  snap_dist=300,
   wbt_dir=wbt_dir,
+  scratch_dir=scratch_dir,
   data_dir=data_dir, 
   output_dir=output_dir){
   
@@ -83,8 +84,7 @@ WatershedAnalysis<-function(
                "--pour_pts='pp.tif'", 
                "--streams='flowgrid.tif'",
                "-o='pp_snap.tif",
-               paste0("--snap_dist=",threshold)
-  ))
+               paste0("--snap_dist=",snap_dist)))
   
   #Convert back to point file
   snapgrid<-raster(paste0(scratch_dir,"pp_snap.tif"))
@@ -95,7 +95,6 @@ WatershedAnalysis<-function(
               coords=c("x","y"), 
               crs=paste(dem@crs))
   st_write(snappnts, paste0(scratch_dir,"snap.shp"), delete_layer = T)
-  snappnts<-data.frame(snappnts)
   
   #Create folder for watershed files
   dir.create(paste0(scratch_dir,"temp"))
@@ -110,7 +109,7 @@ WatershedAnalysis<-function(
 
   #Create list of raster files
   watersheds <- list.files(paste0(scratch_dir,"temp")) 
-  watersheds <- paste0(scratch_dir, "temp\\", watersheds)
+  watersheds <- paste0(scratch_dir, "temp/", watersheds)
   
   #Create function to print individual watershed files 
   fun<-function(i){
@@ -118,7 +117,7 @@ WatershedAnalysis<-function(
     l<-unique(r)
     for(j in 1:length(l)){
       #Define unique id
-      uid<-snappnts[,c(unique_id,"watershedID")]
+      uid<-data.frame(snappnts[,c(unique_id,"watershedID")])
       uid<-uid[,unique_id][uid$watershedID==l[j]]
       
       #Isolate watershed points
@@ -132,6 +131,63 @@ WatershedAnalysis<-function(
   
   #Apply function
   sapply(seq(1, length(watersheds)), fun)
+  
+  #Find watersheds that didn't delineate
+  files<-list.files(paste0(data_dir,"watershed/"))
+  files<-substr(files,1,nchar(files)-4) %>% as.numeric()
+  pnts<-st_read(paste0(scratch_dir,"pnts.shp"))
+  pnts<-pnts[!(pnts[,unique_id][[1]] %in% files),]
+  
+  #Determine if they are duplicates [most are!]
+  fun<-function(i){
+  #for(i in 1:dim(pnts)[1]){
+    #Export point
+    pnt<-pnts[i,]
+    st_write(pnt, paste0(scratch_dir,"pnt.shp"), delete_layer = T)
+    
+    #Create pour pnt raster
+    system(paste(paste(wbt_dir), 
+                 "-r=VectorPointsToRaster", 
+                 paste0("--wd=",scratch_dir),
+                 "-i='pnt.shp'", 
+                 paste0("--field=",unique_id),
+                 "-o=pp_single.tif",
+                 "--assign=min",
+                 "--nodata",
+                 "--base=dem.tif"))
+    
+    #Jenson Snap Pour point
+    system(paste(paste(wbt_dir),
+                 "-r=JensonSnapPourPoints", 
+                 paste0("--wd=",scratch_dir),
+                 "--pour_pts='pp_single.tif'", 
+                 "--streams='flowgrid.tif'",
+                 "-o='pp_single_snap.tif",
+                 paste0("--snap_dist=",snap_dist)))
+    
+    #Convert snapped point to pnt in R environment
+    sgrid<-raster(paste0(scratch_dir,"pp_single_snap.tif"))
+    spnt<-data.frame(rasterToPoints(sgrid, fun=function(x){x>0}))
+      colnames(spnt)<-c('x','y',paste(unique_id))
+    spnt<-st_as_sf(spnt, 
+                   coords = c("x","y"), 
+                   crs=paste(dem@crs))
+    
+    #If an intersection occurs
+    if(length(spnt[snappnts,1])>1){
+       #Intersect with previous snapped points
+       watershed<-st_intersection(spnt, snappnts)
+    
+      #Write copy to ouput directory
+      file.copy(paste0(output_dir,watershed[[2]],".tif"),
+                paste0(output_dir,watershed[[1]],".tif"))
+    }
+  }
+  
+  #run function
+  if(dim(pnts)[1]>0){
+    lapply(seq(1, dim(pnts)[1]), fun)
+  }
   
   #Remove files
   unlink(paste0(scratch_dir,"temp"), recursive=T)
